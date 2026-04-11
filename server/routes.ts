@@ -1,5 +1,7 @@
 import type { Express } from "express";
 import type { Server } from "http";
+import path from "path";
+import fs from "fs";
 import { getStorage } from "./storage";
 import { Resend } from "resend";
 import { quoteFormSchema } from "@shared/schema";
@@ -121,6 +123,18 @@ function buildEmailHtml(client: any, quote: any, items: any[], baseUrl: string) 
 
 // ── Route Registration ────────────────────────────────────────────────────────
 export async function registerRoutes(_httpServer: Server, app: Express) {
+
+  // ── Logo asset ────────────────────────────────────────────────────────────
+  app.get("/api/assets/logo", (_req, res) => {
+    const logoPath = path.resolve(__dirname, "public", "harry-spotter-logo.jpg");
+    if (fs.existsSync(logoPath)) {
+      res.setHeader("Content-Type", "image/jpeg");
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      res.sendFile(logoPath);
+    } else {
+      res.status(404).send("Logo not found");
+    }
+  });
 
   // ── Settings ──────────────────────────────────────────────────────────────
   app.get("/api/settings", async (_req, res) => {
@@ -634,6 +648,7 @@ function buildBookingHtml(
   baseUrl: string
 ) {
   const stripePublishableKey = process.env.STRIPE_PUBLISHABLE_KEY || "";
+  const logoUrl = `${baseUrl}/api/assets/logo`;
   const slotOptions = slots.map(s =>
     `<option value="${s.start}|${s.end}">${s.label}</option>`
   ).join("\n");
@@ -643,61 +658,90 @@ function buildBookingHtml(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Book Your Cleaning — Clean Wizz</title>
+  <title>Book Your Cleaning — Harry Spotter Cleaning Co.</title>
   <script src="https://js.stripe.com/v3/"><\/script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:'Segoe UI',sans-serif;background:#f7f6f2;min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:32px 16px}
-    .card{background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 32px rgba(0,0,0,.10);max-width:540px;width:100%}
-    .header{background:#01696f;padding:28px 36px}
-    .header h1{color:#fff;font-size:22px;font-weight:700;margin:0}
-    .header p{color:#a7d8db;font-size:14px;margin:4px 0 0}
-    .body{padding:32px 36px}
-    .body h2{font-size:18px;color:#28251d;margin-bottom:6px}
-    .body .sub{color:#7a7974;font-size:14px;margin-bottom:24px}
-    .total-badge{background:#f0fafa;border:1px solid #a7d8db;border-radius:8px;padding:12px 16px;margin-bottom:28px;display:flex;justify-content:space-between;align-items:center}
-    .total-badge span{color:#7a7974;font-size:14px}
-    .total-badge strong{color:#01696f;font-size:22px;font-weight:700}
-    .section-label{display:block;font-size:13px;font-weight:600;color:#28251d;margin-bottom:6px}
-    select{width:100%;padding:12px 14px;border:1px solid #e5e7eb;border-radius:8px;font-size:15px;color:#28251d;background:#fff;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%237a7974' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;cursor:pointer}
-    select:focus{outline:none;border-color:#01696f;box-shadow:0 0 0 3px rgba(1,105,111,.1)}
-    .divider{border:none;border-top:1px solid #e5e7eb;margin:28px 0}
-    /* Terms box */
-    .terms-box{background:#fafaf8;border:1px solid #e5e7eb;border-radius:10px;padding:18px 20px;margin-bottom:20px;max-height:220px;overflow-y:auto}
-    .terms-box h3{font-size:13px;font-weight:700;color:#28251d;margin-bottom:10px;text-transform:uppercase;letter-spacing:.04em}
-    .terms-box p{font-size:12px;color:#5a5954;line-height:1.7;margin-bottom:8px}
-    .terms-box p:last-child{margin-bottom:0}
-    .terms-check{display:flex;align-items:flex-start;gap:10px;margin-top:16px;cursor:pointer}
-    .terms-check input[type=checkbox]{width:16px;height:16px;flex-shrink:0;margin-top:2px;accent-color:#01696f;cursor:pointer}
-    .terms-check span{font-size:13px;color:#28251d;font-weight:500;line-height:1.5}
-    /* Stripe card element */
+    body{font-family:'Segoe UI',sans-serif;background:#1a0a0e;min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:32px 16px}
+    .card{background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 8px 48px rgba(0,0,0,.4);max-width:560px;width:100%}
+    /* Header */
+    .header{background:linear-gradient(135deg,#7a0e20 0%,#a01733 50%,#7a0e20 100%);padding:0 0 24px;text-align:center;position:relative}
+    .header-top{background:rgba(0,0,0,.15);padding:20px 36px 16px;display:flex;align-items:center;justify-content:center;gap:16px}
+    .logo-wrap{background:#fff;border-radius:12px;padding:6px 10px;display:inline-flex;align-items:center;justify-content:center}
+    .logo-wrap img{height:52px;width:auto;display:block}
+    .header-text{text-align:left}
+    .header-text h1{color:#f5d878;font-size:20px;font-weight:800;margin:0;letter-spacing:-.01em;text-shadow:0 1px 3px rgba(0,0,0,.3)}
+    .header-text p{color:rgba(245,216,120,.75);font-size:12px;margin:2px 0 0;letter-spacing:.02em}
+    .header-badge{display:inline-block;background:rgba(245,216,120,.15);border:1px solid rgba(245,216,120,.3);color:#f5d878;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding:5px 14px;border-radius:20px;margin:4px 0 0}
+    /* Body */
+    .body{padding:28px 36px 32px}
+    .greeting{font-size:18px;font-weight:700;color:#1a0a0e;margin-bottom:4px}
+    .sub{color:#7a7974;font-size:14px;margin-bottom:22px;line-height:1.5}
+    .total-badge{background:linear-gradient(135deg,#fdf2f4,#fff8e6);border:1px solid #e8b4be;border-radius:10px;padding:14px 18px;margin-bottom:28px;display:flex;justify-content:space-between;align-items:center}
+    .total-badge span{color:#7a7974;font-size:13px;font-weight:500}
+    .total-badge strong{color:#a01733;font-size:24px;font-weight:800}
+    /* Step labels */
+    .step-label{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+    .step-num{background:#a01733;color:#fff;width:20px;height:20px;border-radius:50%;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+    .step-title{font-size:13px;font-weight:700;color:#1a0a0e;letter-spacing:.01em}
+    select{width:100%;padding:12px 14px;border:1.5px solid #e5e7eb;border-radius:8px;font-size:15px;color:#1a0a0e;background:#fff;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%237a7974' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;cursor:pointer;font-family:inherit}
+    select:focus{outline:none;border-color:#a01733;box-shadow:0 0 0 3px rgba(160,23,51,.1)}
+    .divider{border:none;border-top:1px solid #f0ece8;margin:24px 0}
+    /* Terms */
+    .terms-box{background:#fafaf8;border:1.5px solid #e8e4e0;border-radius:10px;padding:16px 18px;margin-bottom:14px;max-height:210px;overflow-y:auto}
+    .terms-box h3{font-size:11px;font-weight:800;color:#a01733;margin-bottom:10px;text-transform:uppercase;letter-spacing:.07em}
+    .terms-box .terms-section{margin-bottom:12px}
+    .terms-box .terms-section:last-child{margin-bottom:0}
+    .terms-box .terms-section h4{font-size:12px;font-weight:700;color:#1a0a0e;margin-bottom:4px}
+    .terms-box .terms-section p,.terms-box .terms-section ul{font-size:12px;color:#5a5954;line-height:1.65}
+    .terms-box .terms-section ul{padding-left:16px;margin:4px 0 0}
+    .terms-box .terms-section ul li{margin-bottom:2px}
+    .terms-check{display:flex;align-items:flex-start;gap:10px;cursor:pointer;padding:2px 0}
+    .terms-check input[type=checkbox]{width:16px;height:16px;flex-shrink:0;margin-top:2px;accent-color:#a01733;cursor:pointer}
+    .terms-check span{font-size:13px;color:#1a0a0e;font-weight:600;line-height:1.5}
+    /* Stripe */
     .card-section{margin-bottom:4px}
-    #card-element{padding:12px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;transition:border-color .15s}
-    #card-element.StripeElement--focus{border-color:#01696f;box-shadow:0 0 0 3px rgba(1,105,111,.1)}
+    #card-element{padding:12px 14px;border:1.5px solid #e5e7eb;border-radius:8px;background:#fff;transition:border-color .15s}
+    #card-element.StripeElement--focus{border-color:#a01733;box-shadow:0 0 0 3px rgba(160,23,51,.1)}
     #card-element.StripeElement--invalid{border-color:#c0392b}
     #card-errors{color:#c0392b;font-size:12px;margin-top:6px;min-height:18px}
     /* Pay button */
-    .btn{display:block;width:100%;margin-top:24px;background:#01696f;color:#fff;border:none;padding:15px;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;transition:background .15s,opacity .15s}
-    .btn:hover:not(:disabled){background:#015a60}
-    .btn:disabled{opacity:.45;cursor:not-allowed}
-    .msg{margin-top:16px;padding:14px 16px;border-radius:8px;font-size:14px;text-align:center;display:none}
-    .msg.success{background:#f0fafa;color:#01696f;border:1px solid #a7d8db}
+    .btn{display:block;width:100%;margin-top:22px;background:linear-gradient(135deg,#a01733,#7a0e20);color:#f5d878;border:none;padding:16px;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;transition:opacity .15s,transform .1s;letter-spacing:.01em}
+    .btn:hover:not(:disabled){opacity:.92;transform:translateY(-1px)}
+    .btn:active:not(:disabled){transform:translateY(0)}
+    .btn:disabled{opacity:.4;cursor:not-allowed;transform:none}
+    .msg{margin-top:16px;padding:14px 16px;border-radius:10px;font-size:14px;text-align:center;display:none;line-height:1.5}
+    .msg.success{background:#f0fdf4;color:#166534;border:1px solid #86efac}
     .msg.error{background:#fff0f0;color:#c0392b;border:1px solid #f5c6c6}
-    .secure-note{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:12px;color:#bab9b4;font-size:11px}
+    .secure-note{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:10px;color:#bab9b4;font-size:11px}
     .secure-note svg{flex-shrink:0}
-    .footer{padding:16px 36px;background:#f7f6f2;border-top:1px solid #e5e7eb}
-    .footer p{color:#bab9b4;font-size:12px}
+    /* Footer */
+    .footer{padding:14px 36px;background:#1a0a0e;text-align:center}
+    .footer p{color:rgba(245,216,120,.5);font-size:11px}
+    .footer a{color:rgba(245,216,120,.7);text-decoration:none}
+    .footer a:hover{color:#f5d878}
   </style>
 </head>
 <body>
   <div class="card">
     <div class="header">
-      <h1>Clean Wizz</h1>
-      <p>Professional Cleaning Services by Harry Spotter Cleaning Co.</p>
+      <div class="header-top">
+        <div class="logo-wrap">
+          <img src="${logoUrl}" alt="Harry Spotter Cleaning Co." onerror="this.style.display='none'">
+        </div>
+        <div class="header-text">
+          <h1>Harry Spotter Cleaning Co.</h1>
+          <p>Professional Cleaning Services &middot; Ontario, Canada</p>
+        </div>
+      </div>
+      <div style="text-align:center;padding:0 36px">
+        <div class="header-badge">Booking Confirmation</div>
+      </div>
     </div>
+
     <div class="body">
-      <h2>Hi ${clientName}!</h2>
-      <p class="sub">Choose a time, review our terms, and complete your payment to lock in your booking.</p>
+      <p class="greeting">Hi ${clientName}!</p>
+      <p class="sub">You&rsquo;re one step away from locking in your clean. Choose a time, review our service agreement, and complete your payment below.</p>
 
       <div class="total-badge">
         <span>Amount due today</span>
@@ -705,10 +749,13 @@ function buildBookingHtml(
       </div>
 
       ${slots.length === 0
-        ? `<p style="color:#c0392b;text-align:center;padding:20px 0;">No available slots right now. Please call us to book directly.</p>`
+        ? `<p style="color:#c0392b;text-align:center;padding:20px 0;">No available slots right now. Please call us to book directly at <a href="tel:3433216242" style="color:#a01733">343-321-6242</a>.</p>`
         : `
       <!-- Step 1: Time Slot -->
-      <label class="section-label" for="slot">1 &nbsp; Select a time slot</label>
+      <div class="step-label">
+        <div class="step-num">1</div>
+        <div class="step-title">Select a time slot</div>
+      </div>
       <select id="slot">
         <option value="">— Pick a date and time —</option>
         ${slotOptions}
@@ -717,45 +764,80 @@ function buildBookingHtml(
       <hr class="divider">
 
       <!-- Step 2: Terms & Conditions -->
-      <label class="section-label">2 &nbsp; Terms &amp; Conditions</label>
+      <div class="step-label">
+        <div class="step-num">2</div>
+        <div class="step-title">Service Agreement &amp; Terms</div>
+      </div>
       <div class="terms-box">
-        <h3>Service Agreement — Harry Spotter Cleaning Co.</h3>
-        <p>By booking this service, you (the "Client") agree to the following terms and conditions governing the cleaning services provided by Harry Spotter Cleaning Co. (the "Company").</p>
-        <p><strong>Liability Waiver.</strong> The Company shall exercise reasonable care when performing services at the Client's property. However, the Company is not liable for pre-existing damage, wear and tear, or damage caused by fragile, improperly secured, or inherently unstable items. The Client agrees to secure or remove valuables, fragile items, and irreplaceable objects prior to service. The Company's total liability for any claim shall not exceed the cost of the service provided.</p>
-        <p><strong>Property Access.</strong> The Client is responsible for providing safe and unobstructed access to the premises at the scheduled time. Failure to provide access may result in forfeiture of the booking without refund.</p>
-        <p><strong>Refund Policy.</strong> Refunds for poor service quality are granted at the <strong>sole discretion of Harry Spotter Cleaning Co. Management</strong>. The Company is committed to client satisfaction and will make reasonable efforts to address any service concerns raised within 24 hours of service completion. Requests for refunds must be submitted in writing and accompanied by reasonable documentation of the issue.</p>
-        <p><strong>Cancellation.</strong> Cancellations must be made no less than 24 hours before the scheduled appointment. Late cancellations or no-shows may be subject to a cancellation fee.</p>
-        <p><strong>Payment.</strong> Full payment is collected at the time of booking. By completing checkout you authorize the Company to charge the full quoted amount to your payment method.</p>
-        <p><strong>Governing Law.</strong> This agreement is governed by the laws of the Province of Ontario, Canada.</p>
+        <h3>Harry Spotter Cleaning Co. &mdash; Service Agreement</h3>
+
+        <div class="terms-section">
+          <h4>Payment Policy</h4>
+          <p>Full payment is required upfront to confirm your booking and reserve your time slot. All transactions are processed securely through Stripe. By completing your booking, you authorize Harry Spotter Cleaning Co. to charge the full quoted amount to your payment method.</p>
+        </div>
+
+        <div class="terms-section">
+          <h4>Cancellation &amp; Refund Policy</h4>
+          <ul>
+            <li><strong>48+ hours before appointment:</strong> Full refund issued.</li>
+            <li><strong>24&ndash;48 hours before appointment:</strong> 50% refund issued.</li>
+            <li><strong>Less than 24 hours before appointment:</strong> No refund.</li>
+            <li><strong>Property access denied:</strong> If our team cannot access the property at the scheduled time, no refund will be issued.</li>
+          </ul>
+        </div>
+
+        <div class="terms-section">
+          <h4>Service Quality Guarantee</h4>
+          <ul>
+            <li>Any concerns about service quality must be reported within <strong>24 hours</strong> of completion.</li>
+            <li>Our first remedy is always a <strong>free reclean</strong>, offered within 24&ndash;48 hours of your report.</li>
+            <li>If you decline the reclean, a <strong>partial refund (10&ndash;50%)</strong> may be offered at our discretion.</li>
+            <li>A full refund is only issued if the service was not performed or was severely inadequate.</li>
+          </ul>
+        </div>
+
+        <div class="terms-section">
+          <h4>General Terms</h4>
+          <ul>
+            <li>Booking a service reserves a dedicated cleaning team and time slot exclusively for you.</li>
+            <li>Refunds are only considered after a reclean has been offered.</li>
+            <li>The Company is not liable for pre-existing damage, fragile items, or unsecured valuables.</li>
+            <li>This agreement is governed by the laws of the Province of Ontario, Canada.</li>
+          </ul>
+        </div>
       </div>
 
       <label class="terms-check" id="termsLabel">
         <input type="checkbox" id="termsChk">
-        <span>I have read and agree to the Terms &amp; Conditions above</span>
+        <span>I have read and agree to the Service Agreement &amp; Terms above</span>
       </label>
 
       <hr class="divider">
 
       <!-- Step 3: Payment -->
-      <label class="section-label">3 &nbsp; Payment details</label>
+      <div class="step-label">
+        <div class="step-num">3</div>
+        <div class="step-title">Payment details</div>
+      </div>
       <div class="card-section">
         <div id="card-element"></div>
         <div id="card-errors" role="alert"></div>
       </div>
 
-      <button class="btn" id="payBtn" disabled>Confirm, Agree &amp; Pay — $${quote.total.toFixed(2)} CAD</button>
+      <button class="btn" id="payBtn" disabled>✨ Confirm, Agree &amp; Pay &mdash; $${quote.total.toFixed(2)} CAD</button>
 
       <div class="secure-note">
         <svg width="12" height="14" viewBox="0 0 12 14" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="5" width="10" height="8" rx="1.5" fill="#bab9b4"/><path d="M3.5 5V3.5a2.5 2.5 0 0 1 5 0V5" stroke="#bab9b4" stroke-width="1.2" stroke-linecap="round"/></svg>
-        Secured by Stripe · Your card details are never stored on our servers
+        Secured by Stripe &middot; Your card details are never stored on our servers
       </div>
       `
       }
 
       <div class="msg" id="msg"></div>
     </div>
+
     <div class="footer">
-      <p>Clean Wizz · Quote ID: ${quote.id.slice(0, 8)} · Harry Spotter Cleaning Co.</p>
+      <p>Harry Spotter Cleaning Co. &middot; Quote #${quote.id.slice(0, 8)} &middot; <a href="https://harryspottercleaning.ca">harryspottercleaning.ca</a></p>
     </div>
   </div>
 
@@ -765,13 +847,13 @@ function buildBookingHtml(
       var QUOTE_ID        = '${quote.id}';
       var BASE_URL        = '${baseUrl}';
 
-      var select   = document.getElementById('slot');
-      var termsChk = document.getElementById('termsChk');
-      var payBtn   = document.getElementById('payBtn');
-      var msgEl    = document.getElementById('msg');
+      var select     = document.getElementById('slot');
+      var termsChk   = document.getElementById('termsChk');
+      var payBtn     = document.getElementById('payBtn');
+      var msgEl      = document.getElementById('msg');
       var cardErrors = document.getElementById('card-errors');
 
-      if (!select || !payBtn) return; // No slots available, nothing to wire up
+      if (!select || !payBtn) return;
 
       var stripe      = Stripe(PUBLISHABLE_KEY);
       var elements    = stripe.elements();
@@ -780,7 +862,7 @@ function buildBookingHtml(
           base: {
             fontFamily: "'Segoe UI', sans-serif",
             fontSize: '15px',
-            color: '#28251d',
+            color: '#1a0a0e',
             '::placeholder': { color: '#bab9b4' },
           },
           invalid: { color: '#c0392b' },
@@ -792,35 +874,28 @@ function buildBookingHtml(
 
       cardElement.on('change', function(e) {
         cardComplete = e.complete;
-        if (e.error) {
-          cardErrors.textContent = e.error.message;
-        } else {
-          cardErrors.textContent = '';
-        }
+        cardErrors.textContent = e.error ? e.error.message : '';
         updatePayBtn();
       });
 
       function updatePayBtn() {
-        var slotOk  = select && select.value !== '';
-        var termsOk = termsChk && termsChk.checked;
-        payBtn.disabled = !(slotOk && termsOk && cardComplete);
+        payBtn.disabled = !(select && select.value && termsChk && termsChk.checked && cardComplete);
       }
 
-      if (select)   { select.addEventListener('change', updatePayBtn); select.addEventListener('input', updatePayBtn); }
-      if (termsChk) { termsChk.addEventListener('change', updatePayBtn); }
+      select.addEventListener('change', updatePayBtn);
+      select.addEventListener('input', updatePayBtn);
+      termsChk.addEventListener('change', updatePayBtn);
 
       payBtn.addEventListener('click', async function() {
         if (!select.value) return;
         var parts = select.value.split('|');
-        var start = parts[0];
-        var end   = parts[1];
+        var start = parts[0], end = parts[1];
 
         payBtn.disabled = true;
         payBtn.textContent = 'Processing payment\u2026';
         if (msgEl) msgEl.style.display = 'none';
 
         try {
-          // 1. Create PaymentIntent on server
           var intentRes = await fetch(BASE_URL + '/api/payment/intent', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -829,51 +904,38 @@ function buildBookingHtml(
           var intentData = await intentRes.json();
           if (!intentRes.ok) throw new Error(intentData.error || 'Could not create payment.');
 
-          // 2. Confirm card payment with Stripe.js
           var result = await stripe.confirmCardPayment(intentData.clientSecret, {
             payment_method: { card: cardElement },
           });
+          if (result.error) throw new Error(result.error.message);
 
-          if (result.error) {
-            throw new Error(result.error.message);
-          }
-
-          // 3. Payment succeeded — book the slot
           payBtn.textContent = 'Confirming booking\u2026';
           var bookRes = await fetch(BASE_URL + '/api/booking/book', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              quoteId: QUOTE_ID,
-              start: start,
-              end: end,
-              paymentIntentId: result.paymentIntent.id,
-            }),
+            body: JSON.stringify({ quoteId: QUOTE_ID, start, end, paymentIntentId: result.paymentIntent.id }),
           });
           var bookData = await bookRes.json();
 
           if (bookRes.ok && bookData.success) {
-            // Hide the whole form area
-            document.getElementById('slot').style.display = 'none';
-            document.querySelector('label[for="slot"]') && (document.querySelector('label[for="slot"]').style.display = 'none');
-            document.querySelectorAll('.divider, .section-label, .terms-box, #termsLabel, .card-section, .secure-note').forEach(function(el) { el.style.display = 'none'; });
+            document.querySelectorAll('.step-label,.divider,.terms-box,#termsLabel,.card-section,.secure-note,#slot').forEach(function(el){ el.style.display='none'; });
             payBtn.style.display = 'none';
             if (msgEl) {
               msgEl.className = 'msg success';
               msgEl.style.display = 'block';
-              msgEl.innerHTML = '\uD83D\uDCC5 <strong>Booking confirmed!</strong> Payment received. A confirmation email is on its way — we look forward to seeing you!';
+              msgEl.innerHTML = '\u2728 <strong>You\'re all booked!</strong> Payment received &mdash; a confirmation email is on its way. We look forward to making your space sparkle!';
             }
           } else {
-            throw new Error(bookData.error || 'Booking failed after payment.');
+            throw new Error(bookData.error || 'Booking failed after payment. Please contact us.');
           }
         } catch (err) {
           if (msgEl) {
             msgEl.className = 'msg error';
             msgEl.style.display = 'block';
-            msgEl.textContent = err.message || 'Something went wrong. Please try again or call us directly.';
+            msgEl.textContent = err.message || 'Something went wrong. Please try again or call us at 343-321-6242.';
           }
           payBtn.disabled = false;
-          payBtn.textContent = 'Confirm, Agree & Pay — $${quote.total.toFixed(2)} CAD';
+          payBtn.textContent = '\u2728 Confirm, Agree & Pay \u2014 $${quote.total.toFixed(2)} CAD';
         }
       });
     })();
