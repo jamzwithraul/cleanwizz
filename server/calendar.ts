@@ -143,7 +143,6 @@ export async function bookSlot(opts: {
       location: opts.clientAddress,
       start: { dateTime: opts.start, timeZone: "America/Toronto" },
       end:   { dateTime: opts.end,   timeZone: "America/Toronto" },
-      attendees: [{ email: opts.clientEmail }],
       reminders: {
         useDefault: false,
         overrides: [
