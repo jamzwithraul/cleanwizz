@@ -638,22 +638,28 @@ function buildBookingHtml(
   </div>
 
   <script>
-    const select = document.getElementById('slot');
-    const btn = document.getElementById('bookBtn');
-    const msg = document.getElementById('msg');
+    const select = /** @type {HTMLSelectElement} */ (document.getElementById('slot'));
+    const btn    = /** @type {HTMLButtonElement} */ (document.getElementById('bookBtn'));
+    const msg    = document.getElementById('msg');
+
+    function updateBtn() {
+      if (btn) btn.disabled = !select || !select.value;
+    }
 
     if (select) {
-      select.addEventListener('change', () => {
-        btn.disabled = !select.value;
-      });
+      select.addEventListener('change', updateBtn);
+      select.addEventListener('input', updateBtn);
     }
 
     if (btn) {
       btn.addEventListener('click', async () => {
-        const [start, end] = select.value.split('|');
+        if (!select || !select.value) return;
+        const parts = select.value.split('|');
+        const start = parts[0];
+        const end   = parts[1];
         btn.disabled = true;
         btn.textContent = 'Booking...';
-        msg.style.display = 'none';
+        if (msg) msg.style.display = 'none';
 
         try {
           const res = await fetch('${baseUrl}/api/booking/book', {
@@ -665,18 +671,23 @@ function buildBookingHtml(
 
           if (res.ok && data.success) {
             btn.style.display = 'none';
-            select.style.display = 'none';
-            document.querySelector('label').style.display = 'none';
-            msg.className = 'msg success';
-            msg.style.display = 'block';
-            msg.innerHTML = '📅 <strong>Booking confirmed!</strong> You\'ll receive a calendar invite shortly. We look forward to seeing you!';
+            if (select) select.style.display = 'none';
+            const lbl = document.querySelector('label');
+            if (lbl) lbl.style.display = 'none';
+            if (msg) {
+              msg.className = 'msg success';
+              msg.style.display = 'block';
+              msg.innerHTML = '\uD83D\uDCC5 <strong>Booking confirmed!</strong> You will receive a calendar invite shortly. We look forward to seeing you!';
+            }
           } else {
             throw new Error(data.error || 'Booking failed');
           }
         } catch (err) {
-          msg.className = 'msg error';
-          msg.style.display = 'block';
-          msg.textContent = 'Something went wrong. Please try again or call us directly.';
+          if (msg) {
+            msg.className = 'msg error';
+            msg.style.display = 'block';
+            msg.textContent = 'Something went wrong. Please try again or call us directly.';
+          }
           btn.disabled = false;
           btn.textContent = 'Confirm Booking';
         }
