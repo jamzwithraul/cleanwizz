@@ -327,6 +327,38 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         return res.send(acceptedHtml("You already accepted this quote. We'll be in touch shortly."));
       }
       await db.updateQuoteStatus(q.id, "accepted");
+
+      // Notify business owner
+      if (resend) {
+        try {
+          const client = await db.getClient(q.clientId);
+          const items  = await db.getQuoteItems(q.id);
+          const linesSummary = items.map(i => `${i.description}: $${i.amount.toFixed(2)}`).join("<br>");
+          await resend.emails.send({
+            from:    process.env.FROM_EMAIL || "Clean Wizz <quotes@cleanwizz.ca>",
+            to:      "magic@harryspottercleaning.ca",
+            subject: `✅ Quote Accepted — ${client?.name} ($${q.total.toFixed(2)} CAD)`,
+            html: `
+              <div style="font-family:'Segoe UI',sans-serif;max-width:600px;margin:0 auto;padding:32px;">
+                <h2 style="color:#01696f;margin:0 0 16px;">Quote Accepted</h2>
+                <p><strong>${client?.name}</strong> has accepted their quote.</p>
+                <table style="width:100%;border-collapse:collapse;margin:16px 0;">
+                  <tr><td style="padding:6px 0;color:#555;">Email</td><td><a href="mailto:${client?.email}">${client?.email}</a></td></tr>
+                  <tr><td style="padding:6px 0;color:#555;">Phone</td><td>${client?.phone || "—"}</td></tr>
+                  <tr><td style="padding:6px 0;color:#555;">Address</td><td>${client?.address || "—"}</td></tr>
+                  <tr><td style="padding:6px 0;color:#555;">Service</td><td>${q.serviceType}</td></tr>
+                  <tr><td style="padding:6px 0;color:#555;">Sq Ft</td><td>${q.squareFootage}</td></tr>
+                  <tr><td style="padding:6px 0;color:#555;">Total</td><td><strong>$${q.total.toFixed(2)} CAD</strong></td></tr>
+                </table>
+                <p style="color:#555;font-size:13px;">Line items:<br>${linesSummary}</p>
+              </div>
+            `,
+          });
+        } catch (emailErr) {
+          console.error("[notify] Failed to send owner notification:", emailErr);
+        }
+      }
+
       res.send(acceptedHtml("Thank you! We'll be in touch to confirm your appointment."));
     } catch (err: any) {
       res.status(500).send("An error occurred.");
