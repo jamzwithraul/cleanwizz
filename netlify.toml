@@ -1,0 +1,14 @@
+[build]
+  # Run from repo root
+  command = "npm run build"
+  publish = "dist/public"
+
+[build.environment]
+  # Set this in Netlify's UI under Site Settings → Environment Variables
+  # VITE_BACKEND_URL = "https://your-railway-app.up.railway.app"
+
+# SPA routing: redirect all non-asset requests to index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
