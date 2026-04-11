@@ -53,43 +53,61 @@ export async function getAvailableSlots(): Promise<{ start: string; end: string;
     end:   new Date(e.end?.dateTime   || e.end?.date   || ""),
   }));
 
-  // Generate candidate slots
+  // Generate candidate slots in Eastern Time
   const slots: { start: string; end: string; label: string }[] = [];
-  const cursor = new Date(timeMin);
-  cursor.setMinutes(0, 0, 0);
 
-  while (cursor < timeMax) {
-    const day = cursor.getDay();
-    if (WORKING_DAYS.includes(day)) {
-      for (let h = BUSINESS_HOURS.start; h + SLOT_DURATION_HOURS <= BUSINESS_HOURS.end; h++) {
-        const slotStart = new Date(cursor);
-        slotStart.setHours(h, 0, 0, 0);
-        const slotEnd = new Date(slotStart);
-        slotEnd.setHours(h + SLOT_DURATION_HOURS, 0, 0, 0);
+  // Iterate day by day over the window
+  const cursorDate = new Date(timeMin);
+  // Reset to midnight Eastern of the next day
+  const etFormatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Toronto",
+    year: "numeric", month: "2-digit", day: "2-digit",
+  });
 
-        if (slotStart <= now) continue;
+  // Build slots by constructing ET datetime strings
+  for (let d = 0; d < DAYS_AHEAD; d++) {
+    const dayOffset = new Date(now);
+    dayOffset.setDate(dayOffset.getDate() + d + 1);
 
-        // Check overlap with busy blocks
-        const isBusy = busyBlocks.some(b => slotStart < b.end && slotEnd > b.start);
-        if (!isBusy) {
-          const label = slotStart.toLocaleString("en-CA", {
-            timeZone: "America/Toronto",
-            weekday: "short",
-            month:   "short",
-            day:     "numeric",
-            hour:    "numeric",
-            minute:  "2-digit",
-            hour12:  true,
-          });
-          slots.push({
-            start: slotStart.toISOString(),
-            end:   slotEnd.toISOString(),
-            label,
-          });
-        }
+    // Get the date parts in ET
+    const etParts = etFormatter.formatToParts(dayOffset);
+    const etYear  = etParts.find(p => p.type === "year")!.value;
+    const etMonth = etParts.find(p => p.type === "month")!.value;
+    const etDay   = etParts.find(p => p.type === "day")!.value;
+
+    for (let h = BUSINESS_HOURS.start; h + SLOT_DURATION_HOURS <= BUSINESS_HOURS.end; h++) {
+      // Build ISO string in ET
+      const hStr  = String(h).padStart(2, "0");
+      const h2Str = String(h + SLOT_DURATION_HOURS).padStart(2, "0");
+      const slotStart = new Date(`${etYear}-${etMonth}-${etDay}T${hStr}:00:00-04:00`);
+      const slotEnd   = new Date(`${etYear}-${etMonth}-${etDay}T${h2Str}:00:00-04:00`);
+
+      // Skip past slots
+      if (slotStart <= now) continue;
+
+      // Skip weekends (check ET day of week)
+      const etDow = slotStart.toLocaleDateString("en-CA", { timeZone: "America/Toronto", weekday: "short" });
+      if (etDow === "Sun") continue;
+
+      // Check overlap with busy blocks
+      const isBusy = busyBlocks.some(b => slotStart < b.end && slotEnd > b.start);
+      if (!isBusy) {
+        const label = slotStart.toLocaleString("en-CA", {
+          timeZone: "America/Toronto",
+          weekday: "short",
+          month:   "short",
+          day:     "numeric",
+          hour:    "numeric",
+          minute:  "2-digit",
+          hour12:  true,
+        });
+        slots.push({
+          start: slotStart.toISOString(),
+          end:   slotEnd.toISOString(),
+          label,
+        });
       }
     }
-    cursor.setDate(cursor.getDate() + 1);
   }
 
   return slots;
