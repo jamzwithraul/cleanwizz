@@ -139,7 +139,7 @@ export default function QuoteDetail() {
             asChild
             data-testid="button-email-preview"
           >
-            <a href={`/api/quotes/${id}/email-preview`} target="_blank" rel="noopener noreferrer">
+            <a href={`${import.meta.env.VITE_BACKEND_URL || ""}/api/quotes/${id}/email-preview`} target="_blank" rel="noopener noreferrer">
               <ExternalLink size={14} className="mr-1" /> Preview Email
             </a>
           </Button>
