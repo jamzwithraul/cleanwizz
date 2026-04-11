@@ -492,6 +492,39 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
             </div>
           `,
         }).catch(e => console.error("[booking] Owner notify failed:", e));
+
+        // Send confirmation email to client
+        await resend.emails.send({
+          from:    process.env.FROM_EMAIL || "Clean Wizz <quotes@cleanwizz.ca>",
+          to:      client.email,
+          subject: `📅 Your Cleaning is Booked — ${slotLabel}`,
+          html: `
+            <div style="font-family:'Segoe UI',sans-serif;max-width:600px;margin:0 auto;">
+              <div style="background:#01696f;padding:28px 36px;border-radius:12px 12px 0 0;">
+                <h1 style="color:#fff;margin:0;font-size:22px;font-weight:700;">Clean Wizz</h1>
+                <p style="color:#a7d8db;margin:4px 0 0;font-size:14px;">Professional Cleaning Services</p>
+              </div>
+              <div style="background:#fff;padding:32px 36px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
+                <h2 style="color:#28251d;font-size:20px;margin:0 0 8px;">Hi ${client.name}, you're booked! 🎉</h2>
+                <p style="color:#7a7974;font-size:15px;margin:0 0 24px;">Here's a summary of your upcoming cleaning appointment.</p>
+
+                <div style="background:#f0fafa;border:1px solid #a7d8db;border-radius:8px;padding:16px 20px;margin-bottom:24px;">
+                  <p style="margin:0;font-size:16px;font-weight:700;color:#01696f;">📅 ${slotLabel}</p>
+                  <p style="margin:6px 0 0;font-size:14px;color:#7a7974;">${client.address || ""}</p>
+                </div>
+
+                <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
+                  <tr><td style="padding:6px 0;color:#7a7974;font-size:14px;">Service</td><td style="color:#28251d;font-size:14px;">${q.propertyType}</td></tr>
+                  <tr><td style="padding:6px 0;color:#7a7974;font-size:14px;">Total</td><td style="color:#28251d;font-size:14px;font-weight:700;">$${q.total.toFixed(2)} CAD</td></tr>
+                </table>
+
+                <p style="color:#7a7974;font-size:13px;margin:0;">Questions? Reply to this email or call us directly. We look forward to seeing you!</p>
+
+                <p style="margin:24px 0 0;font-size:12px;color:#bab9b4;">Harry Spotter Cleaning Co. · quotes@harryspottercleaning.ca</p>
+              </div>
+            </div>
+          `,
+        }).catch(e => console.error("[booking] Client confirm email failed:", e));
       }
 
       res.json({ success: true, eventLink });
@@ -677,7 +710,7 @@ function buildBookingHtml(
             if (msg) {
               msg.className = 'msg success';
               msg.style.display = 'block';
-              msg.innerHTML = '\uD83D\uDCC5 <strong>Booking confirmed!</strong> You will receive a calendar invite shortly. We look forward to seeing you!';
+              msg.innerHTML = '\uD83D\uDCC5 <strong>Booking confirmed!</strong> A confirmation email is on its way to you. We look forward to seeing you!';
             }
           } else {
             throw new Error(data.error || 'Booking failed');
