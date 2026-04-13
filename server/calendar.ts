@@ -24,8 +24,12 @@ function getAuth() {
 }
 
 // ── Business hours config ─────────────────────────────────────────────────────
-// Mon–Sat, 8am–8pm Eastern.
-const BUSINESS_HOURS = { start: 8, end: 20 }; // 24h
+// Mon–Sat, two booking windows: 8–11 AM and 1–5 PM Eastern.
+// Site posted hours are 8 AM – 8 PM but bookable slots use these windows.
+const SLOT_WINDOWS = [
+  { start: 8, end: 11 },  // morning block
+  { start: 13, end: 17 }, // afternoon block
+];
 const SLOT_DURATION_HOURS = 2; // each cleaning slot is 2 hours
 const DAYS_AHEAD = 14; // show availability 2 weeks out
 const WORKING_DAYS = [1, 2, 3, 4, 5, 6]; // Mon=1 … Sat=6 (0=Sun)
@@ -77,37 +81,39 @@ export async function getAvailableSlots(): Promise<{ start: string; end: string;
     const etMonth = etParts.find(p => p.type === "month")!.value;
     const etDay   = etParts.find(p => p.type === "day")!.value;
 
-    for (let h = BUSINESS_HOURS.start; h + SLOT_DURATION_HOURS <= BUSINESS_HOURS.end; h++) {
-      // Build ISO string in ET
-      const hStr  = String(h).padStart(2, "0");
-      const h2Str = String(h + SLOT_DURATION_HOURS).padStart(2, "0");
-      const slotStart = new Date(`${etYear}-${etMonth}-${etDay}T${hStr}:00:00-04:00`);
-      const slotEnd   = new Date(`${etYear}-${etMonth}-${etDay}T${h2Str}:00:00-04:00`);
+    for (const window of SLOT_WINDOWS) {
+      for (let h = window.start; h + SLOT_DURATION_HOURS <= window.end; h++) {
+        // Build ISO string in ET
+        const hStr  = String(h).padStart(2, "0");
+        const h2Str = String(h + SLOT_DURATION_HOURS).padStart(2, "0");
+        const slotStart = new Date(`${etYear}-${etMonth}-${etDay}T${hStr}:00:00-04:00`);
+        const slotEnd   = new Date(`${etYear}-${etMonth}-${etDay}T${h2Str}:00:00-04:00`);
 
-      // Skip past slots
-      if (slotStart <= now) continue;
+        // Skip past slots
+        if (slotStart <= now) continue;
 
-      // Skip weekends (check ET day of week)
-      const etDow = slotStart.toLocaleDateString("en-CA", { timeZone: "America/Toronto", weekday: "short" });
-      if (etDow === "Sun") continue;
+        // Skip weekends (check ET day of week)
+        const etDow = slotStart.toLocaleDateString("en-CA", { timeZone: "America/Toronto", weekday: "short" });
+        if (etDow === "Sun") continue;
 
-      // Check overlap with busy blocks
-      const isBusy = busyBlocks.some(b => slotStart < b.end && slotEnd > b.start);
-      if (!isBusy) {
-        const label = slotStart.toLocaleString("en-CA", {
-          timeZone: "America/Toronto",
-          weekday: "short",
-          month:   "short",
-          day:     "numeric",
-          hour:    "numeric",
-          minute:  "2-digit",
-          hour12:  true,
-        });
-        slots.push({
-          start: slotStart.toISOString(),
-          end:   slotEnd.toISOString(),
-          label,
-        });
+        // Check overlap with busy blocks
+        const isBusy = busyBlocks.some(b => slotStart < b.end && slotEnd > b.start);
+        if (!isBusy) {
+          const label = slotStart.toLocaleString("en-CA", {
+            timeZone: "America/Toronto",
+            weekday: "short",
+            month:   "short",
+            day:     "numeric",
+            hour:    "numeric",
+            minute:  "2-digit",
+            hour12:  true,
+          });
+          slots.push({
+            start: slotStart.toISOString(),
+            end:   slotEnd.toISOString(),
+            label,
+          });
+        }
       }
     }
   }
