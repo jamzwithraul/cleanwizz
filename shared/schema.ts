@@ -107,9 +107,11 @@ export const quoteFormSchema = z.object({
   specialNotes: z.string().default(""),
   // services
   serviceType: z.enum(["standard", "deep", "moveout"]).default("standard"),
-  addons: z.array(z.enum(["fridge", "windows", "baseboards", "grout"])).default([]),
+  addons: z.array(z.enum(["fridge", "windows", "baseboards", "grout", "oven"])).default([]),
   // promo
   promoCode: z.string().default(""),
+  // entrance method if client is not home
+  entranceMethod: z.string().default(""),
 });
 
 export type QuoteFormValues = z.infer<typeof quoteFormSchema>;

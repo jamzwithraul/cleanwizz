@@ -173,50 +173,57 @@ function resolveServiceType(form: any): "standard" | "deep" | "moveout" {
   return form.serviceType;
 }
 
+// ── Transparent Pricing Constants ─────────────────────────────────────────────
+const BASE_FEE = 300;              // minimum / base fee ($300 covers 0–1000 sq ft)
+const SQFT_RATE = 0.26;            // per-square-foot rate
+const OVEN_PRICE = 100;            // in-oven cleaning add-on
+const HST_RATE = 0.13;             // Ontario HST
+
+const OVEN_NOTICE = "Easy-Off is used for deep oven cleaning. This product emits a strong odour. We recommend opening windows for ventilation during and after the service.";
+
 function buildLineItems(form: any, s: any) {
-  const items: { label: string; quantity: number; unitPrice: number; lineTotal: number }[] = [];
+  const items: { label: string; quantity: number; unitPrice: number; lineTotal: number; category: string }[] = [];
 
-  items.push({ label: "Base rate", quantity: 1, unitPrice: s.baseRate, lineTotal: s.baseRate });
+  // 1. Base Fee — always $300
+  items.push({ label: "Base fee", quantity: 1, unitPrice: BASE_FEE, lineTotal: BASE_FEE, category: "base" });
 
+  // 2. Square footage
   if (form.squareFootage > 0) {
-    const sqftTotal = parseFloat((form.squareFootage * s.pricePerSqft).toFixed(2));
+    const sqftTotal = parseFloat((form.squareFootage * SQFT_RATE).toFixed(2));
     items.push({
-      label: `Square footage (${form.squareFootage} sq ft @ $${s.pricePerSqft}/sq ft)`,
+      label: `Square footage (${form.squareFootage} sq ft @ $${SQFT_RATE}/sq ft)`,
       quantity: form.squareFootage,
-      unitPrice: s.pricePerSqft,
+      unitPrice: SQFT_RATE,
       lineTotal: sqftTotal,
+      category: "sqft",
     });
   }
 
-  if (form.bedrooms > 0) {
-    items.push({ label: `Bedrooms (${form.bedrooms})`, quantity: form.bedrooms, unitPrice: s.perBedroom, lineTotal: form.bedrooms * s.perBedroom });
-  }
-
-  if (form.bathrooms > 0) {
-    items.push({ label: `Bathrooms (${form.bathrooms})`, quantity: form.bathrooms, unitPrice: s.perBathroom, lineTotal: form.bathrooms * s.perBathroom });
-  }
-
-  // Resolve effective service type (auto-upgrade standard → deep if needed)
+  // 3. Resolve effective service type (auto-upgrade standard → deep if needed)
   const effectiveType = resolveServiceType(form);
   if (effectiveType !== form.serviceType) {
-    items.push({ label: "Auto-upgraded to Deep Clean", quantity: 1, unitPrice: 0, lineTotal: 0 });
+    items.push({ label: "Auto-upgraded to Deep Clean", quantity: 1, unitPrice: 0, lineTotal: 0, category: "upgrade" });
   }
   if (effectiveType === "deep") {
-    items.push({ label: "Deep clean surcharge", quantity: 1, unitPrice: s.deepCleanSurcharge, lineTotal: s.deepCleanSurcharge });
+    items.push({ label: "Deep clean surcharge", quantity: 1, unitPrice: s.deepCleanSurcharge, lineTotal: s.deepCleanSurcharge, category: "surcharge" });
   } else if (effectiveType === "moveout") {
-    items.push({ label: "Move-in/out surcharge", quantity: 1, unitPrice: s.moveoutSurcharge, lineTotal: s.moveoutSurcharge });
+    items.push({ label: "Move-in/out surcharge", quantity: 1, unitPrice: s.moveoutSurcharge, lineTotal: s.moveoutSurcharge, category: "surcharge" });
   }
 
-  // Add-ons (only available when service is standard; deep/moveout include them)
-  const addonMap: Record<string, { label: string; price: number }> = {
+  // 4. Add-ons (standard only, except oven which is available for all packages)
+  const addonMap: Record<string, { label: string; price: number; notice?: string }> = {
     fridge:     { label: "Inside fridge",     price: s.fridgePrice },
     windows:    { label: "Interior windows",   price: s.windowsPrice },
     baseboards: { label: "Baseboards",         price: s.baseboardsPrice },
     grout:      { label: "Grout scrubbing",    price: s.groutPrice ?? 35 },
+    oven:       { label: "In-Oven Cleaning",   price: OVEN_PRICE, notice: OVEN_NOTICE },
   };
   for (const addon of form.addons || []) {
     const a = addonMap[addon];
-    if (a) items.push({ label: a.label, quantity: 1, unitPrice: a.price, lineTotal: a.price });
+    if (!a) continue;
+    // Oven add-on is always available; other add-ons only for standard
+    if (addon !== "oven" && effectiveType !== "standard") continue;
+    items.push({ label: a.label, quantity: 1, unitPrice: a.price, lineTotal: a.price, category: "addon" });
   }
 
   return items;
@@ -276,14 +283,34 @@ function buildEmailHtml(client: any, quote: any, items: any[], baseUrl: string) 
         </tr>
       </table>` : ""}
 
+      <!-- Oven notice -->
+      ${items.some((i: any) => i.label === "In-Oven Cleaning") ? `
+      <div style="background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;padding:12px 16px;margin-bottom:20px;">
+        <p style="margin:0;color:#92400e;font-size:12px;line-height:1.5;"><strong>&#9888;&#65039; Oven Cleaning Notice:</strong> Easy-Off is used for deep oven cleaning. This product emits a strong odour. We recommend opening windows for ventilation during and after the service.</p>
+      </div>` : ""}
+
       <!-- Total -->
-      <div style="background:linear-gradient(135deg,#fdf2f4,#fff8e6);border:2px solid #f4a3b2;border-radius:12px;padding:18px 20px;margin-bottom:28px;">
+      <div style="background:linear-gradient(135deg,#fdf2f4,#fff8e6);border:2px solid #f4a3b2;border-radius:12px;padding:18px 20px;margin-bottom:20px;">
         <table style="width:100%;border-collapse:collapse;">
           <tr>
-            <td style="font-size:18px;font-weight:700;color:#3d2b1f;">Total</td>
+            <td style="font-size:18px;font-weight:700;color:#3d2b1f;">Total (incl. HST)</td>
             <td style="font-size:28px;font-weight:800;color:#a01733;text-align:right;">$${quote.total.toFixed(2)} <span style="font-size:14px;font-weight:600;color:#7a6550;">CAD</span></td>
           </tr>
         </table>
+      </div>
+
+      <!-- Transparent Pricing badge -->
+      <div style="text-align:center;margin-bottom:20px;">
+        <span style="display:inline-block;background:#f0fdf4;border:1px solid #86efac;border-radius:50px;padding:6px 16px;font-size:12px;color:#166534;font-weight:600;">&#10003; Transparent Pricing &#8212; No hidden fees</span>
+      </div>
+
+      <!-- Terms -->
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px 18px;margin-bottom:24px;">
+        <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:#475569;">Please Note</p>
+        <ul style="margin:0;padding-left:16px;font-size:12px;color:#64748b;line-height:1.7;">
+          <li>Your cleaning specialist provides all cleaning solutions, broom, mop, and vacuum.</li>
+          <li>For sanitary reasons, the client must supply their own toilet brush.</li>
+        </ul>
       </div>
 
       <p style="color:#7a6550;font-size:13px;margin-bottom:28px;">This quote is valid until <strong style="color:#3d2b1f;">${expiryDate}</strong>.</p>
@@ -469,7 +496,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         });
       }
 
-      // Pricing
+      // Pricing — Transparent itemized breakdown
       const rawItems = buildLineItems(form, s);
       const subtotal = rawItems.reduce((sum, i) => sum + i.lineTotal, 0);
 
@@ -486,7 +513,12 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         }
       }
 
-      const total = parseFloat((subtotal - discount).toFixed(2));
+      const afterDiscount = parseFloat((subtotal - discount).toFixed(2));
+      const tax = parseFloat((afterDiscount * HST_RATE).toFixed(2));
+      const total = parseFloat((afterDiscount + tax).toFixed(2));
+
+      // Combine entrance method into special notes for storage
+      const notesWithEntrance = [form.specialNotes, form.entranceMethod ? `Entrance method: ${form.entranceMethod}` : ""].filter(Boolean).join("\n");
 
       const quote = await db.createQuote({
         clientId:     client.id,
@@ -500,14 +532,37 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         squareFootage: form.squareFootage,
         bedrooms:     form.bedrooms,
         bathrooms:    form.bathrooms,
-        specialNotes: form.specialNotes,
+        specialNotes: notesWithEntrance,
         services:     JSON.stringify([form.serviceType]),
         addons:       JSON.stringify(form.addons),
       });
 
-      const items = await db.createQuoteItems(rawItems.map(i => ({ ...i, quoteId: quote.id })));
+      // Add tax as a line item for display
+      const taxItem = { label: `HST (13%)`, quantity: 1, unitPrice: tax, lineTotal: tax, category: "tax" };
+      const allItems = [...rawItems, taxItem];
+      const items = await db.createQuoteItems(allItems.map(i => ({ ...i, quoteId: quote.id })));
 
-      res.status(201).json({ quote, items, client });
+      // Check if oven add-on was selected for notice
+      const hasOven = (form.addons || []).includes("oven");
+
+      // Structured breakdown for UI
+      const breakdown = {
+        baseFee:   BASE_FEE,
+        sqftRate:  SQFT_RATE,
+        sqftTotal: rawItems.find(i => i.category === "sqft")?.lineTotal ?? 0,
+        addons:    rawItems.filter(i => i.category === "addon").map(i => ({ label: i.label, amount: i.lineTotal })),
+        surcharge: rawItems.find(i => i.category === "surcharge")?.lineTotal ?? 0,
+        subtotal,
+        discount,
+        afterDiscount,
+        tax,
+        taxRate:   HST_RATE,
+        total,
+        hasOven,
+        ovenNotice: hasOven ? OVEN_NOTICE : null,
+      };
+
+      res.status(201).json({ quote: { ...quote, total }, items, client, breakdown });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }
