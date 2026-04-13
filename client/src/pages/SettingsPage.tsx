@@ -342,6 +342,8 @@ export default function SettingsPage() {
                                     min="0"
                                     step="0.01"
                                     {...field}
+                                    value={field.value === 0 ? '' : field.value}
+                                    onFocus={e => { if (Number(e.target.value) === 0) field.onChange(''); }}
                                     onChange={e => field.onChange(parseFloat(e.target.value) || 0)}
                                   />
                                 </FormControl>

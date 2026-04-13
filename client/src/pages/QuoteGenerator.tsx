@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -108,6 +108,15 @@ function useLivePrice(values: QuoteFormValues, settings: Settings | undefined) {
   return { items, subtotal, discount: 0, total: subtotal };
 }
 
+const QUOTE_DRAFT_KEY = 'cw_quote_draft';
+
+function loadDraft(): Partial<QuoteFormValues> {
+  try {
+    const raw = localStorage.getItem(QUOTE_DRAFT_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
 export default function QuoteGenerator() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
@@ -119,6 +128,8 @@ export default function QuoteGenerator() {
     queryKey: ["/api/settings"],
   });
 
+  const draft = loadDraft();
+
   const form = useForm<QuoteFormValues>({
     resolver: zodResolver(quoteFormSchema),
     defaultValues: {
@@ -126,18 +137,27 @@ export default function QuoteGenerator() {
       email: "",
       phone: "",
       address: "",
-      propertyType: "house",
-      squareFootage: 0,
-      bedrooms: 1,
-      bathrooms: 1,
+      propertyType: (draft.propertyType as QuoteFormValues['propertyType']) ?? "house",
+      squareFootage: draft.squareFootage ?? 0,
+      bedrooms: draft.bedrooms ?? 1,
+      bathrooms: draft.bathrooms ?? 1,
       specialNotes: "",
-      serviceType: "standard",
-      addons: [],
+      serviceType: (draft.serviceType as QuoteFormValues['serviceType']) ?? "standard",
+      addons: draft.addons ?? [],
       promoCode: "",
     },
   });
 
   const values = form.watch();
+
+  // Persist non-PII fields to localStorage as the user types
+  useEffect(() => {
+    const { propertyType, squareFootage, bedrooms, bathrooms, serviceType, addons } = values;
+    try {
+      localStorage.setItem(QUOTE_DRAFT_KEY, JSON.stringify({ propertyType, squareFootage, bedrooms, bathrooms, serviceType, addons }));
+    } catch { /* quota exceeded or private mode */ }
+  }, [values.propertyType, values.squareFootage, values.bedrooms, values.bathrooms, values.serviceType, values.addons]);
+
   const { items, subtotal } = useLivePrice(values, settings);
 
   let discount = 0;
