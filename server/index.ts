@@ -13,12 +13,23 @@ declare module "http" {
 }
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
-// Allows the Netlify frontend to reach this Railway backend across origins.
-// Set ALLOWED_ORIGIN in Railway env vars to your Netlify URL.
-const allowedOrigin = process.env.ALLOWED_ORIGIN || "*";
+// Allows frontends to reach this Railway backend across origins.
+// Set ALLOWED_ORIGINS (comma-separated) in Railway env vars.
+// Falls back to ALLOWED_ORIGIN for backwards compatibility.
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || process.env.ALLOWED_ORIGIN || "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
 
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+  const requestOrigin = req.headers.origin || "";
+  if (allowedOrigins.length === 0) {
+    // No origins configured — allow all (dev mode)
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  } else if (allowedOrigins.includes(requestOrigin)) {
+    res.setHeader("Access-Control-Allow-Origin", requestOrigin);
+    res.setHeader("Vary", "Origin");
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") {
