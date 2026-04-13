@@ -124,7 +124,6 @@ interface SettingsRow {
   id: string;
   price_per_sqft: number;
   base_rate: number;
-  overnight_base_rate: number;
   per_bedroom: number;
   per_bathroom: number;
   fridge_price: number;
@@ -198,7 +197,6 @@ function mapSettings(r: SettingsRow): Settings {
     id: r.id,
     pricePerSqft: Number(r.price_per_sqft),
     baseRate: Number(r.base_rate),
-    overnightBaseRate: Number(r.overnight_base_rate ?? 500),
     perBedroom: Number(r.per_bedroom),
     perBathroom: Number(r.per_bathroom),
     fridgePrice: Number(r.fridge_price),
@@ -468,7 +466,6 @@ export function createSupabaseStorage(): IStorageAsync {
       if (data.perBedroom           !== undefined) patch.per_bedroom           = data.perBedroom;
       if (data.perBathroom          !== undefined) patch.per_bathroom          = data.perBathroom;
       if (data.fridgePrice          !== undefined) patch.fridge_price          = data.fridgePrice;
-      if (data.overnightBaseRate     !== undefined) patch.overnight_base_rate   = data.overnightBaseRate;
       if (data.groutPrice            !== undefined) patch.grout_price            = data.groutPrice;
       if (data.windowsPrice         !== undefined) patch.windows_price         = data.windowsPrice;
       if (data.baseboardsPrice      !== undefined) patch.baseboards_price      = data.baseboardsPrice;

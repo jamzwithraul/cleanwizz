@@ -42,7 +42,6 @@ import { useState } from "react";
 // Pricing form schema
 const pricingSchema = z.object({
   baseRate: z.number().min(0),
-  overnightBaseRate: z.number().min(0),
   pricePerSqft: z.number().min(0),
   perBedroom: z.number().min(0),
   perBathroom: z.number().min(0),
@@ -98,7 +97,6 @@ export default function SettingsPage() {
     resolver: zodResolver(pricingSchema),
     defaultValues: {
       baseRate: 80,
-      overnightBaseRate: 500,
       pricePerSqft: 0.30,
       perBedroom: 15,
       perBathroom: 20,
@@ -111,7 +109,6 @@ export default function SettingsPage() {
     },
     values: settings ? {
       baseRate: settings.baseRate,
-      overnightBaseRate: settings.overnightBaseRate ?? 500,
       pricePerSqft: settings.pricePerSqft,
       perBedroom: settings.perBedroom,
       perBathroom: settings.perBathroom,
@@ -226,7 +223,6 @@ export default function SettingsPage() {
                   <div className="space-y-1">
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Base Rates</p>
                     <PricingField label="Base Rate (daytime)" name="baseRate" form={pricingForm} />
-                    <PricingField label="Overnight Base Rate (11pm–7am)" name="overnightBaseRate" form={pricingForm} />
                     <PricingField label="Price per Sq Ft" name="pricePerSqft" form={pricingForm} />
                     <PricingField label="Per Bedroom" name="perBedroom" form={pricingForm} />
                     <PricingField label="Per Bathroom" name="perBathroom" form={pricingForm} />

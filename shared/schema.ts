@@ -76,7 +76,6 @@ export const settings = sqliteTable("settings", {
   id: text("id").primaryKey().default("default"),
   pricePerSqft: real("price_per_sqft").notNull().default(0.30),
   baseRate: real("base_rate").notNull().default(100),
-  overnightBaseRate: real("overnight_base_rate").notNull().default(500),
   perBedroom: real("per_bedroom").notNull().default(15),
   perBathroom: real("per_bathroom").notNull().default(20),
   fridgePrice: real("fridge_price").notNull().default(25),
