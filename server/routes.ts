@@ -162,9 +162,11 @@ const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KE
 const BASE_FEE = 300;              // minimum / base fee ($300 covers 0–1000 sq ft)
 const SQFT_RATE = 0.26;            // per-square-foot rate
 const OVEN_PRICE = 100;            // in-oven cleaning add-on
+const LAUNDRY_PRICE = 100;         // laundry wash & fold add-on
 const HST_RATE = 0.13;             // Ontario HST
 
 const OVEN_NOTICE = "Easy-Off is used for deep oven cleaning. This product emits a strong odour. We recommend opening windows for ventilation during and after the service.";
+const LAUNDRY_NOTICE = "Client is responsible for sorting special care items (delicates, dry-clean-only, etc.) before the service and for putting laundry away after completion.";
 
 function buildLineItems(form: any, s: any) {
   const items: { label: string; quantity: number; unitPrice: number; lineTotal: number; category: string }[] = [];
@@ -198,12 +200,13 @@ function buildLineItems(form: any, s: any) {
     baseboards: { label: "Baseboards",         price: s.baseboardsPrice },
     grout:      { label: "Grout scrubbing",    price: s.groutPrice ?? 35 },
     oven:       { label: "In-Oven Cleaning",   price: OVEN_PRICE, notice: OVEN_NOTICE },
+    laundry:    { label: "Laundry Wash & Fold", price: LAUNDRY_PRICE, notice: LAUNDRY_NOTICE },
   };
   for (const addon of form.addons || []) {
     const a = addonMap[addon];
     if (!a) continue;
-    // Oven add-on is always available; other add-ons only for standard
-    if (addon !== "oven" && form.serviceType !== "standard") continue;
+    // Oven and laundry add-ons are always available; other add-ons only for standard
+    if (addon !== "oven" && addon !== "laundry" && form.serviceType !== "standard") continue;
     items.push({ label: a.label, quantity: 1, unitPrice: a.price, lineTotal: a.price, category: "addon" });
   }
 
@@ -268,6 +271,12 @@ function buildEmailHtml(client: any, quote: any, items: any[], baseUrl: string) 
       ${items.some((i: any) => i.label === "In-Oven Cleaning") ? `
       <div style="background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;padding:12px 16px;margin-bottom:20px;">
         <p style="margin:0;color:#92400e;font-size:12px;line-height:1.5;"><strong>&#9888;&#65039; Oven Cleaning Notice:</strong> Easy-Off is used for deep oven cleaning. This product emits a strong odour. We recommend opening windows for ventilation during and after the service.</p>
+      </div>` : ""}
+
+      <!-- Laundry notice -->
+      ${items.some((i: any) => i.label === "Laundry Wash & Fold") ? `
+      <div style="background:#eff6ff;border:1px solid #3b82f6;border-radius:8px;padding:12px 16px;margin-bottom:20px;">
+        <p style="margin:0;color:#1e40af;font-size:12px;line-height:1.5;"><strong>&#128085; Laundry Notice:</strong> Client is responsible for sorting special care items (delicates, dry-clean-only, etc.) before the service and for putting laundry away after completion.</p>
       </div>` : ""}
 
       <!-- Total -->
@@ -542,8 +551,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       const allItems = [...rawItems, taxItem];
       const items = await db.createQuoteItems(allItems.map(i => ({ ...i, quoteId: quote.id })));
 
-      // Check if oven add-on was selected for notice
+      // Check if oven/laundry add-ons were selected for notices
       const hasOven = (form.addons || []).includes("oven");
+      const hasLaundry = (form.addons || []).includes("laundry");
 
       // Structured breakdown for UI
       const breakdown = {
@@ -563,6 +573,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         total,
         hasOven,
         ovenNotice: hasOven ? OVEN_NOTICE : null,
+        hasLaundry,
+        laundryNotice: hasLaundry ? LAUNDRY_NOTICE : null,
       };
 
       res.status(201).json({ quote: { ...quote, total }, items, client, breakdown });
@@ -863,6 +875,11 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       ${items.some((i: any) => i.label === "In-Oven Cleaning") ? `
       <div style="background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;padding:12px 16px;margin-bottom:16px;">
         <p style="margin:0;color:#92400e;font-size:12px;line-height:1.5;"><strong>&#9888;&#65039; Oven Cleaning Notice:</strong> Easy-Off is used for deep oven cleaning. This product emits a strong odour. We recommend opening windows for ventilation during and after the service.</p>
+      </div>` : ""}
+
+      ${items.some((i: any) => i.label === "Laundry Wash & Fold") ? `
+      <div style="background:#eff6ff;border:1px solid #3b82f6;border-radius:8px;padding:12px 16px;margin-bottom:16px;">
+        <p style="margin:0;color:#1e40af;font-size:12px;line-height:1.5;"><strong>&#128085; Laundry Notice:</strong> Client is responsible for sorting special care items (delicates, dry-clean-only, etc.) before the service and for putting laundry away after completion.</p>
       </div>` : ""}
 
       <!-- Total -->

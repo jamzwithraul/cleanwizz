@@ -107,7 +107,7 @@ export const quoteFormSchema = z.object({
   specialNotes: z.string().default(""),
   // services
   serviceType: z.enum(["standard", "deep", "moveout"]).default("standard"),
-  addons: z.array(z.enum(["fridge", "windows", "baseboards", "grout", "oven"])).default([]),
+  addons: z.array(z.enum(["fridge", "windows", "baseboards", "grout", "oven", "laundry"])).default([]),
   // number of sessions (2+ gets 20% multi-booking discount)
   numberOfSessions: z.number().int().min(1).max(12).default(1),
   // promo
