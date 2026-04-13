@@ -36,6 +36,7 @@ export const quotes = sqliteTable("quotes", {
   specialNotes: text("special_notes").notNull().default(""),
   services: text("services").notNull().default("[]"), // JSON array
   addons: text("addons").notNull().default("[]"),      // JSON array
+  paymentIntentId: text("payment_intent_id"),           // Stripe PI for capture
 });
 
 export const insertQuoteSchema = createInsertSchema(quotes).omit({ createdAt: true, expiresAt: true });

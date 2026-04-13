@@ -24,8 +24,8 @@ function getAuth() {
 }
 
 // ── Business hours config ─────────────────────────────────────────────────────
-// Mon–Sat, 8am–6pm Eastern. Adjust as needed.
-const BUSINESS_HOURS = { start: 8, end: 18 }; // 24h
+// Mon–Sat, 8am–8pm Eastern.
+const BUSINESS_HOURS = { start: 8, end: 20 }; // 24h
 const SLOT_DURATION_HOURS = 2; // each cleaning slot is 2 hours
 const DAYS_AHEAD = 14; // show availability 2 weeks out
 const WORKING_DAYS = [1, 2, 3, 4, 5, 6]; // Mon=1 … Sat=6 (0=Sun)

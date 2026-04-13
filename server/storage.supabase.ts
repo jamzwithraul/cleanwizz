@@ -53,7 +53,7 @@ export interface IStorageAsync {
   getQuotes(): Promise<Quote[]>;
   getQuote(id: string): Promise<Quote | undefined>;
   createQuote(data: Omit<InsertQuote, "id">): Promise<Quote>;
-  updateQuoteStatus(id: string, status: string): Promise<Quote | undefined>;
+  updateQuoteStatus(id: string, status: string, extra?: Record<string, any>): Promise<Quote | undefined>;
 
   // Quote Items
   getQuoteItems(quoteId: string): Promise<QuoteItem[]>;
@@ -99,6 +99,7 @@ interface QuoteRow {
   special_notes: string;
   services: string;
   addons: string;
+  payment_intent_id: string | null;
 }
 
 interface QuoteItemRow {
@@ -166,6 +167,7 @@ function mapQuote(r: QuoteRow): Quote {
     specialNotes: r.special_notes,
     services: r.services,
     addons: r.addons,
+    paymentIntentId: r.payment_intent_id ?? null,
   };
 }
 
@@ -334,10 +336,12 @@ export function createSupabaseStorage(): IStorageAsync {
       return mapQuote(assertNoError(result, "createQuote") as QuoteRow);
     },
 
-    async updateQuoteStatus(id: string, status: string): Promise<Quote | undefined> {
+    async updateQuoteStatus(id: string, status: string, extra?: Record<string, any>): Promise<Quote | undefined> {
+      const patch: Record<string, any> = { status };
+      if (extra?.paymentIntentId) patch.payment_intent_id = extra.paymentIntentId;
       const result = await supabase
         .from("quotes")
-        .update({ status })
+        .update(patch)
         .eq("id", id)
         .select()
         .single();

@@ -668,7 +668,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   // POST /api/booking/book — client books a slot for a quote
   app.post("/api/booking/book", async (req, res) => {
     try {
-      const { quoteId, start, end } = req.body;
+      const { quoteId, start, end, paymentIntentId } = req.body;
       if (!quoteId || !start || !end) {
         return res.status(400).json({ error: "quoteId, start, and end are required." });
       }
@@ -692,8 +692,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         quoteId:       q.id,
       });
 
-            // Update to accepted and fire cascade
-      await db.updateQuoteStatus(q.id, "accepted");
+            // Update to accepted, store Stripe PaymentIntent ID, and fire cascade
+      await db.updateQuoteStatus(q.id, "accepted", { paymentIntentId: paymentIntentId || null });
 
       // Auto-assign a contractor via cascade
       triggerCascadeAssignment({
@@ -808,14 +808,47 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
       // Check if we've exhausted all contractors
       if (!contractors || nextPosition > contractors.length) {
+        // Cancel the Stripe auth hold — full refund since no contractor available
+        const db = getStorage();
+        const q  = await db.getQuote(quoteId);
+        if (q && (q as any).paymentIntentId && stripe) {
+          try {
+            await stripe.paymentIntents.cancel((q as any).paymentIntentId);
+            console.log(`[cascade] Cancelled PaymentIntent ${(q as any).paymentIntentId} — no contractors available`);
+          } catch (cancelErr: any) {
+            console.error(`[cascade] Failed to cancel PaymentIntent:`, cancelErr?.message);
+          }
+        }
+
         // Notify owner — nobody left
         if (resend) {
+          const client = q ? await db.getClient(q.clientId) : null;
           await resend.emails.send({
             from: process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
             to:   "magic@harryspottercleaning.ca",
             subject: `⚠️ All contractors declined — Quote #${quoteId}`,
-            html: `<p>All contractors have declined or timed out for quote <strong>${quoteId}</strong>. Please assign manually.</p>`,
+            html: `<p>All contractors have declined or timed out for quote <strong>${quoteId}</strong>. The payment authorization has been automatically cancelled (full refund).${client ? ` Client: ${client.name} (${client.email})` : ''}</p>`,
           }).catch(console.error);
+
+          // Notify client of the refund
+          if (client) {
+            await resend.emails.send({
+              from: process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+              to:   client.email,
+              subject: `Update on Your Cleaning Booking — Harry Spotter Cleaning Co.`,
+              html: `<div style="font-family:'Segoe UI',sans-serif;max-width:560px;margin:32px auto;">
+                <div style="background:linear-gradient(135deg,#6b1629,#a01733);padding:24px 32px;border-radius:12px 12px 0 0;text-align:center;">
+                  <h1 style="color:#f9bc15;margin:0;font-size:20px;">Harry Spotter Cleaning Co.</h1>
+                </div>
+                <div style="background:#fff;padding:28px 32px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
+                  <p>Hi ${client.name},</p>
+                  <p>Unfortunately, we were unable to assign a cleaning specialist for your requested time slot. Your payment authorization has been <strong>fully cancelled</strong> — no charge will appear on your card.</p>
+                  <p>We sincerely apologize for the inconvenience. Please feel free to book again at a different time, or call us at <a href="tel:3433216242">343-321-6242</a> and we’ll help you find an available slot.</p>
+                  <p style="color:#7a7974;font-size:13px;margin-top:24px;">Harry Spotter Cleaning Co. · harryspottercleaning.ca</p>
+                </div>
+              </div>`,
+            }).catch(console.error);
+          }
         }
         return res.send(`<!DOCTYPE html><html><head><title>Declined</title></head><body style="font-family:sans-serif;text-align:center;padding:60px;">
           <h2>Got it — thanks for letting us know.</h2><p>This job has been returned to the team for re-assignment.</p>
