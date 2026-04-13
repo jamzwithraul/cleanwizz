@@ -308,8 +308,10 @@ export default function QuoteGenerator() {
                               data-testid="input-sqft"
                               type="number"
                               min={0}
-                              placeholder="0"
+                              placeholder="e.g. 900"
                               {...field}
+                              value={field.value === 0 ? '' : field.value}
+                              onFocus={e => { if (Number(e.target.value) === 0) field.onChange(''); }}
                               onChange={e => field.onChange(parseFloat(e.target.value) || 0)}
                             />
                           </FormControl>
@@ -329,7 +331,10 @@ export default function QuoteGenerator() {
                               type="number"
                               min={0}
                               max={20}
+                              placeholder="e.g. 2"
                               {...field}
+                              value={field.value === 0 ? '' : field.value}
+                              onFocus={e => { if (Number(e.target.value) === 0) field.onChange(''); }}
                               onChange={e => field.onChange(parseInt(e.target.value) || 0)}
                             />
                           </FormControl>
@@ -349,7 +354,10 @@ export default function QuoteGenerator() {
                               type="number"
                               min={0}
                               max={20}
+                              placeholder="e.g. 1"
                               {...field}
+                              value={field.value === 0 ? '' : field.value}
+                              onFocus={e => { if (Number(e.target.value) === 0) field.onChange(''); }}
                               onChange={e => field.onChange(parseInt(e.target.value) || 0)}
                             />
                           </FormControl>

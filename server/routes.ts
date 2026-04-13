@@ -70,52 +70,74 @@ function buildEmailHtml(client: any, quote: any, items: any[], baseUrl: string) 
   const expiryDate = new Date(quote.expiresAt).toLocaleDateString("en-CA", { year: "numeric", month: "long", day: "numeric" });
   const bookUrl = `${baseUrl}/api/quotes/${quote.id}/book`;
 
+  const logoUrl = `${baseUrl}/api/assets/logo`;
   return `<!DOCTYPE html>
 <html>
-<head><meta charset="UTF-8"><title>Your Cleaning Quote</title></head>
-<body style="margin:0;padding:0;background:#f7f6f2;font-family:'Segoe UI',sans-serif;">
-  <div style="max-width:600px;margin:40px auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
-    <div style="background:#01696f;padding:32px 40px;">
-      <h1 style="color:#fff;margin:0;font-size:24px;font-weight:700;">Clean Wizz</h1>
-      <p style="color:#a7d8db;margin:4px 0 0;font-size:14px;">Professional Cleaning Services</p>
-    </div>
-    <div style="padding:32px 40px;">
-      <h2 style="color:#28251d;font-size:20px;margin:0 0 8px;">Hi ${client.name},</h2>
-      <p style="color:#7a7974;font-size:15px;margin:0 0 24px;">Here is your cleaning quote. Please review the details below.</p>
+<head><meta charset="UTF-8"><title>Your Cleaning Quote — Harry Spotter Cleaning Co.</title></head>
+<body style="margin:0;padding:0;background:#fdf8f0;font-family:'Segoe UI',Arial,sans-serif;">
+  <div style="max-width:600px;margin:40px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 32px rgba(110,22,41,0.12);">
 
+    <!-- Header -->
+    <div style="background:linear-gradient(135deg,#6b1629 0%,#a01733 60%,#78420e 100%);padding:32px 40px;text-align:center;">
+      <img src="${logoUrl}" alt="Harry Spotter Cleaning Co." style="width:90px;height:90px;object-fit:contain;border-radius:50%;background:#fff;padding:6px;margin-bottom:14px;display:block;margin-left:auto;margin-right:auto;" />
+      <h1 style="color:#f9bc15;margin:0;font-size:26px;font-weight:800;letter-spacing:0.5px;">Harry Spotter Cleaning Co.</h1>
+      <p style="color:#fde68a;margin:6px 0 0;font-size:14px;letter-spacing:0.5px;">Ottawa’s Magical Cleaning Team</p>
+    </div>
+
+    <!-- Body -->
+    <div style="padding:36px 40px;">
+      <h2 style="color:#6b1629;font-size:22px;margin:0 0 6px;">Hi ${client.name},</h2>
+      <p style="color:#5a4a3a;font-size:15px;margin:0 0 28px;line-height:1.6;">Your cleaning quote is ready! Please review the details below and accept when you’re happy to proceed.</p>
+
+      <!-- Line items -->
       <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
         <thead>
-          <tr style="background:#f7f6f2;">
-            <th style="padding:10px 12px;text-align:left;font-size:13px;color:#7a7974;font-weight:600;border-bottom:2px solid #e5e7eb;">Service</th>
-            <th style="padding:10px 12px;text-align:right;font-size:13px;color:#7a7974;font-weight:600;border-bottom:2px solid #e5e7eb;">Amount</th>
+          <tr style="background:#fdf2f4;">
+            <th style="padding:10px 14px;text-align:left;font-size:13px;color:#7e162c;font-weight:700;border-bottom:2px solid #f4a3b2;text-transform:uppercase;letter-spacing:0.5px;">Service</th>
+            <th style="padding:10px 14px;text-align:right;font-size:13px;color:#7e162c;font-weight:700;border-bottom:2px solid #f4a3b2;text-transform:uppercase;letter-spacing:0.5px;">Amount</th>
           </tr>
         </thead>
         <tbody>${itemRows}</tbody>
       </table>
 
       ${quote.discount > 0 ? `
-      <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
-        <span style="color:#7a7974;font-size:14px;">Subtotal</span>
-        <span style="color:#28251d;font-size:14px;">$${quote.subtotal.toFixed(2)} CAD</span>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:8px;">
+        <tr>
+          <td style="color:#5a4a3a;font-size:14px;padding:4px 0;">Subtotal</td>
+          <td style="color:#3d2b1f;font-size:14px;text-align:right;">$${quote.subtotal.toFixed(2)} CAD</td>
+        </tr>
+        <tr>
+          <td style="color:#166534;font-size:14px;padding:4px 0;">Promo (${quote.promoCode})</td>
+          <td style="color:#166534;font-size:14px;text-align:right;">-$${quote.discount.toFixed(2)} CAD</td>
+        </tr>
+      </table>` : ""}
+
+      <!-- Total -->
+      <div style="background:linear-gradient(135deg,#fdf2f4,#fff8e6);border:2px solid #f4a3b2;border-radius:12px;padding:18px 20px;margin-bottom:28px;">
+        <table style="width:100%;border-collapse:collapse;">
+          <tr>
+            <td style="font-size:18px;font-weight:700;color:#3d2b1f;">Total</td>
+            <td style="font-size:28px;font-weight:800;color:#a01733;text-align:right;">$${quote.total.toFixed(2)} <span style="font-size:14px;font-weight:600;color:#7a6550;">CAD</span></td>
+          </tr>
+        </table>
       </div>
-      <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
-        <span style="color:#437a22;font-size:14px;">Promo (${quote.promoCode})</span>
-        <span style="color:#437a22;font-size:14px;">-$${quote.discount.toFixed(2)} CAD</span>
-      </div>` : ""}
 
-      <div style="background:#f7f6f2;border-radius:8px;padding:16px;display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">
-        <span style="font-size:18px;font-weight:700;color:#28251d;">Total</span>
-        <span style="font-size:24px;font-weight:700;color:#01696f;">$${quote.total.toFixed(2)} CAD</span>
+      <p style="color:#7a6550;font-size:13px;margin-bottom:28px;">This quote is valid until <strong style="color:#3d2b1f;">${expiryDate}</strong>.</p>
+
+      <!-- CTA Button -->
+      <div style="text-align:center;margin-bottom:8px;">
+        <a href="${bookUrl}" style="display:inline-block;background:linear-gradient(135deg,#a01733,#7e162c);color:#f9bc15;text-decoration:none;padding:16px 40px;border-radius:50px;font-weight:700;font-size:16px;letter-spacing:0.3px;box-shadow:0 4px 14px rgba(160,23,51,0.35);">Accept &amp; Choose a Time Slot ✨</a>
       </div>
-
-      <p style="color:#7a7974;font-size:13px;margin-bottom:24px;">This quote is valid until <strong style="color:#28251d;">${expiryDate}</strong>.</p>
-
-      <a href="${bookUrl}" style="display:inline-block;background:#01696f;color:#fff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:15px;">Accept &amp; Choose a Time Slot →</a>
-      <p style="color:#7a7974;font-size:12px;margin-top:12px;">You'll be able to pick a date and time that works for you.</p>
+      <p style="color:#9a8070;font-size:12px;text-align:center;margin-top:10px;">You’ll be able to pick a date and time that works for you.</p>
     </div>
-    <div style="padding:20px 40px;background:#f7f6f2;border-top:1px solid #e5e7eb;">
-      <p style="color:#bab9b4;font-size:12px;margin:0;">Clean Wizz · Professional Cleaning Services · Quote ID: ${quote.id.slice(0, 8)}</p>
+
+    <!-- Footer -->
+    <div style="padding:20px 40px;background:linear-gradient(135deg,#4a0f1c,#3d0c16);border-top:3px solid #f9bc15;text-align:center;">
+      <p style="color:#fde68a;font-size:13px;font-weight:600;margin:0 0 4px;">Harry Spotter Cleaning Co.</p>
+      <p style="color:#c4a87a;font-size:12px;margin:0 0 4px;">Ottawa, Ontario &middot; harryspottercleaning.ca</p>
+      <p style="color:#8a6a50;font-size:11px;margin:0;">Quote ID: ${quote.id.slice(0, 8)}</p>
     </div>
+
   </div>
 </body>
 </html>`;
@@ -356,7 +378,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           const items  = await db.getQuoteItems(q.id);
           const linesSummary = items.map(i => `${i.label}: $${i.lineTotal.toFixed(2)}`).join("<br>");
           await resend.emails.send({
-            from:    process.env.FROM_EMAIL || "Clean Wizz <quotes@cleanwizz.ca>",
+            from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
             to:      "magic@harryspottercleaning.ca",
             subject: `✅ Quote Accepted — ${client?.name} ($${q.total.toFixed(2)} CAD)`,
             html: `
@@ -407,9 +429,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       }
 
       await resend.emails.send({
-        from:    process.env.FROM_EMAIL || "Clean Wizz <quotes@cleanwizz.ca>",
+        from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
         to:      client.email,
-        subject: `Your Cleaning Quote from Clean Wizz — $${q.total.toFixed(2)} CAD`,
+        subject: `Your Cleaning Quote from Harry Spotter Cleaning Co. — $${q.total.toFixed(2)} CAD`,
         html,
       });
 
@@ -517,7 +539,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         });
         const linesSummary = items.map(i => `${i.label}: $${i.lineTotal.toFixed(2)}`).join("<br>");
         await resend.emails.send({
-          from:    process.env.FROM_EMAIL || "Clean Wizz <quotes@cleanwizz.ca>",
+          from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
           to:      "magic@harryspottercleaning.ca",
           subject: `✅ Booking Confirmed — ${client.name} on ${slotLabel}`,
           html: `
@@ -540,21 +562,21 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
         // Send confirmation email to client
         await resend.emails.send({
-          from:    process.env.FROM_EMAIL || "Clean Wizz <quotes@cleanwizz.ca>",
+          from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
           to:      client.email,
           subject: `📅 Your Cleaning is Booked — ${slotLabel}`,
           html: `
             <div style="font-family:'Segoe UI',sans-serif;max-width:600px;margin:0 auto;">
-              <div style="background:#01696f;padding:28px 36px;border-radius:12px 12px 0 0;">
-                <h1 style="color:#fff;margin:0;font-size:22px;font-weight:700;">Clean Wizz</h1>
-                <p style="color:#a7d8db;margin:4px 0 0;font-size:14px;">Professional Cleaning Services</p>
+              <div style="background:linear-gradient(135deg,#6b1629 0%,#a01733 60%,#78420e 100%);padding:28px 36px;border-radius:12px 12px 0 0;text-align:center;">
+                <h1 style="color:#f9bc15;margin:0;font-size:22px;font-weight:800;">Harry Spotter Cleaning Co.</h1>
+                <p style="color:#fde68a;margin:4px 0 0;font-size:13px;">Ottawa’s Magical Cleaning Team</p>
               </div>
-              <div style="background:#fff;padding:32px 36px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
-                <h2 style="color:#28251d;font-size:20px;margin:0 0 8px;">Hi ${client.name}, you're booked! 🎉</h2>
-                <p style="color:#7a7974;font-size:15px;margin:0 0 24px;">Here's a summary of your upcoming cleaning appointment.</p>
+              <div style="background:#fff;padding:32px 36px;border:1px solid #f4a3b2;border-top:none;border-radius:0 0 12px 12px;">
+                <h2 style="color:#6b1629;font-size:20px;margin:0 0 8px;">Hi ${client.name}, you’re booked! ✨</h2>
+                <p style="color:#5a4a3a;font-size:15px;margin:0 0 24px;">Here’s a summary of your upcoming cleaning appointment.</p>
 
-                <div style="background:#f0fafa;border:1px solid #a7d8db;border-radius:8px;padding:16px 20px;margin-bottom:24px;">
-                  <p style="margin:0;font-size:16px;font-weight:700;color:#01696f;">📅 ${slotLabel}</p>
+                <div style="background:#fdf2f4;border:1px solid #f4a3b2;border-radius:8px;padding:16px 20px;margin-bottom:24px;">
+                  <p style="margin:0;font-size:16px;font-weight:700;color:#a01733;">📅 ${slotLabel}</p>
                   <p style="margin:6px 0 0;font-size:14px;color:#7a7974;">${client.address || ""}</p>
                 </div>
 
