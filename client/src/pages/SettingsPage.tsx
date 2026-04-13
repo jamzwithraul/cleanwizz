@@ -42,11 +42,12 @@ import { useState } from "react";
 // Pricing form schema
 const pricingSchema = z.object({
   baseRate: z.number().min(0),
+  overnightBaseRate: z.number().min(0),
   pricePerSqft: z.number().min(0),
   perBedroom: z.number().min(0),
   perBathroom: z.number().min(0),
   fridgePrice: z.number().min(0),
-  ovenPrice: z.number().min(0),
+  groutPrice: z.number().min(0),
   windowsPrice: z.number().min(0),
   baseboardsPrice: z.number().min(0),
   deepCleanSurcharge: z.number().min(0),
@@ -97,11 +98,12 @@ export default function SettingsPage() {
     resolver: zodResolver(pricingSchema),
     defaultValues: {
       baseRate: 80,
-      pricePerSqft: 0.12,
+      overnightBaseRate: 500,
+      pricePerSqft: 0.30,
       perBedroom: 15,
       perBathroom: 20,
-      fridgePrice: 20,
-      ovenPrice: 25,
+      fridgePrice: 25,
+      groutPrice: 35,
       windowsPrice: 40,
       baseboardsPrice: 30,
       deepCleanSurcharge: 60,
@@ -109,11 +111,12 @@ export default function SettingsPage() {
     },
     values: settings ? {
       baseRate: settings.baseRate,
+      overnightBaseRate: settings.overnightBaseRate ?? 500,
       pricePerSqft: settings.pricePerSqft,
       perBedroom: settings.perBedroom,
       perBathroom: settings.perBathroom,
       fridgePrice: settings.fridgePrice,
-      ovenPrice: settings.ovenPrice,
+      groutPrice: settings.groutPrice ?? 35,
       windowsPrice: settings.windowsPrice,
       baseboardsPrice: settings.baseboardsPrice,
       deepCleanSurcharge: settings.deepCleanSurcharge,
@@ -222,7 +225,8 @@ export default function SettingsPage() {
                 <form onSubmit={pricingForm.handleSubmit(d => savePricing.mutate(d))}>
                   <div className="space-y-1">
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Base Rates</p>
-                    <PricingField label="Base Rate" name="baseRate" form={pricingForm} />
+                    <PricingField label="Base Rate (daytime)" name="baseRate" form={pricingForm} />
+                    <PricingField label="Overnight Base Rate (11pm–7am)" name="overnightBaseRate" form={pricingForm} />
                     <PricingField label="Price per Sq Ft" name="pricePerSqft" form={pricingForm} />
                     <PricingField label="Per Bedroom" name="perBedroom" form={pricingForm} />
                     <PricingField label="Per Bathroom" name="perBathroom" form={pricingForm} />
@@ -235,7 +239,7 @@ export default function SettingsPage() {
                     <Separator className="my-3" />
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Add-on Prices</p>
                     <PricingField label="Inside Fridge" name="fridgePrice" form={pricingForm} />
-                    <PricingField label="Inside Oven" name="ovenPrice" form={pricingForm} />
+                    <PricingField label="Grout Scrubbing" name="groutPrice" form={pricingForm} />
                     <PricingField label="Interior Windows" name="windowsPrice" form={pricingForm} />
                     <PricingField label="Baseboards" name="baseboardsPrice" form={pricingForm} />
                   </div>

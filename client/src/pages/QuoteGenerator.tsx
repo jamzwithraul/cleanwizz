@@ -42,16 +42,28 @@ import {
 } from "lucide-react";
 
 const SERVICE_OPTIONS = [
-  { value: "standard", label: "Standard Clean", description: "Regular cleaning — no surcharge" },
-  { value: "deep", label: "Deep Clean", description: "+deep clean surcharge" },
-  { value: "moveout", label: "Move-in / Move-out", description: "+move-in/out surcharge" },
+  {
+    value: "standard",
+    label: "Standard Clean",
+    description: "Up to 3 hrs — bathrooms, kitchen, living areas, bedrooms, stairs",
+  },
+  {
+    value: "deep",
+    label: "Deep Clean",
+    description: "Up to 6 hrs — everything in Standard + inside fridge, cabinets, baseboards, windows, grout",
+  },
+  {
+    value: "moveout",
+    label: "Move-In / Move-Out",
+    description: "Up to 8 hrs — everything in Deep + behind fridge/stove, grout scrubbing, all interior windows",
+  },
 ] as const;
 
 const ADDON_OPTIONS = [
-  { id: "fridge", label: "Inside Fridge" },
-  { id: "oven", label: "Inside Oven" },
-  { id: "windows", label: "Interior Windows" },
-  { id: "baseboards", label: "Baseboards" },
+  { id: "fridge",     label: "Inside Fridge" },
+  { id: "windows",   label: "Interior Windows" },
+  { id: "baseboards",label: "Baseboards" },
+  { id: "grout",     label: "Grout Scrubbing" },
 ] as const;
 
 const PROPERTY_TYPES = [
@@ -63,8 +75,21 @@ const PROPERTY_TYPES = [
   { value: "other", label: "Other" },
 ];
 
+// Mirror of server-side resolveServiceType
+function resolveServiceType(values: QuoteFormValues): QuoteFormValues['serviceType'] {
+  if (values.serviceType === 'moveout') return 'moveout';
+  if (
+    values.serviceType === 'standard' && (
+      values.bathrooms > 1 ||
+      values.bedrooms >= 3 ||
+      values.squareFootage > 1500
+    )
+  ) return 'deep';
+  return values.serviceType;
+}
+
 function useLivePrice(values: QuoteFormValues, settings: Settings | undefined) {
-  if (!settings) return { items: [], subtotal: 0, discount: 0, total: 0 };
+  if (!settings) return { items: [], subtotal: 0, discount: 0, total: 0, autoUpgraded: false };
 
   const s = settings;
   const items: { label: string; amount: number }[] = [];
@@ -86,17 +111,19 @@ function useLivePrice(values: QuoteFormValues, settings: Settings | undefined) {
     items.push({ label: `Bathrooms (${values.bathrooms} × $${s.perBathroom})`, amount: values.bathrooms * s.perBathroom });
   }
 
-  if (values.serviceType === "deep") {
+  const effectiveType = resolveServiceType(values);
+  const autoUpgraded = effectiveType !== values.serviceType;
+  if (effectiveType === "deep") {
     items.push({ label: "Deep clean surcharge", amount: s.deepCleanSurcharge });
-  } else if (values.serviceType === "moveout") {
+  } else if (effectiveType === "moveout") {
     items.push({ label: "Move-in/out surcharge", amount: s.moveoutSurcharge });
   }
 
   const addonMap: Record<string, { label: string; price: number }> = {
-    fridge: { label: "Inside fridge", price: s.fridgePrice },
-    oven: { label: "Inside oven", price: s.ovenPrice },
-    windows: { label: "Interior windows", price: s.windowsPrice },
-    baseboards: { label: "Baseboards", price: s.baseboardsPrice },
+    fridge:     { label: "Inside fridge",   price: s.fridgePrice },
+    windows:    { label: "Interior windows", price: s.windowsPrice },
+    baseboards: { label: "Baseboards",       price: s.baseboardsPrice },
+    grout:      { label: "Grout scrubbing",  price: s.groutPrice ?? 35 },
   };
 
   for (const addon of values.addons) {
@@ -105,7 +132,7 @@ function useLivePrice(values: QuoteFormValues, settings: Settings | undefined) {
   }
 
   const subtotal = items.reduce((s, i) => s + i.amount, 0);
-  return { items, subtotal, discount: 0, total: subtotal };
+  return { items, subtotal, discount: 0, total: subtotal, autoUpgraded, effectiveType };
 }
 
 const QUOTE_DRAFT_KEY = 'cw_quote_draft';
@@ -158,7 +185,7 @@ export default function QuoteGenerator() {
     } catch { /* quota exceeded or private mode */ }
   }, [values.propertyType, values.squareFootage, values.bedrooms, values.bathrooms, values.serviceType, values.addons]);
 
-  const { items, subtotal } = useLivePrice(values, settings);
+  const { items, subtotal, autoUpgraded, effectiveType } = useLivePrice(values, settings);
 
   let discount = 0;
   if (promoApplied) {
@@ -444,50 +471,63 @@ export default function QuoteGenerator() {
                     )}
                   />
 
+                  {/* Auto-upgrade notice */}
+                  {autoUpgraded && (
+                    <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm">
+                      <p className="font-semibold text-amber-800">Auto-upgraded to Deep Clean</p>
+                      <p className="text-amber-700 text-xs mt-0.5">Your property details (bathrooms, bedrooms, or sq ft) require a Deep Clean. Add-ons are included.</p>
+                    </div>
+                  )}
+
                   <Separator />
 
-                  <div>
-                    <p className="text-sm font-medium mb-3">Add-ons</p>
-                    <FormField
-                      control={form.control}
-                      name="addons"
-                      render={() => (
-                        <FormItem>
-                          <div className="grid grid-cols-2 gap-3">
-                            {ADDON_OPTIONS.map(addon => (
-                              <FormField
-                                key={addon.id}
-                                control={form.control}
-                                name="addons"
-                                render={({ field }) => (
-                                  <FormItem className="flex items-center gap-3 p-3 border border-border rounded-lg">
-                                    <FormControl>
-                                      <Checkbox
-                                        data-testid={`addon-${addon.id}`}
-                                        checked={field.value?.includes(addon.id as any)}
-                                        onCheckedChange={(checked) => {
-                                          const current = field.value || [];
-                                          if (checked) {
-                                            field.onChange([...current, addon.id]);
-                                          } else {
-                                            field.onChange(current.filter((v: string) => v !== addon.id));
-                                          }
-                                        }}
-                                      />
-                                    </FormControl>
-                                    <FormLabel className="font-normal cursor-pointer text-sm">
-                                      {addon.label}
-                                    </FormLabel>
-                                  </FormItem>
-                                )}
-                              />
-                            ))}
-                          </div>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
+                  {/* Add-ons: only shown for Standard (deep/moveout include everything) */}
+                  {effectiveType === "standard" ? (
+                    <div>
+                      <p className="text-sm font-medium mb-1">Add-ons <span className="text-xs text-muted-foreground font-normal">(Standard only — included in Deep &amp; Move-In/Out)</span></p>
+                      <FormField
+                        control={form.control}
+                        name="addons"
+                        render={() => (
+                          <FormItem>
+                            <div className="grid grid-cols-2 gap-3">
+                              {ADDON_OPTIONS.map(addon => (
+                                <FormField
+                                  key={addon.id}
+                                  control={form.control}
+                                  name="addons"
+                                  render={({ field }) => (
+                                    <FormItem className="flex items-center gap-3 p-3 border border-border rounded-lg">
+                                      <FormControl>
+                                        <Checkbox
+                                          data-testid={`addon-${addon.id}`}
+                                          checked={field.value?.includes(addon.id as any)}
+                                          onCheckedChange={(checked) => {
+                                            const current = field.value || [];
+                                            if (checked) {
+                                              field.onChange([...current, addon.id]);
+                                            } else {
+                                              field.onChange(current.filter((v: string) => v !== addon.id));
+                                            }
+                                          }}
+                                        />
+                                      </FormControl>
+                                      <FormLabel className="font-normal cursor-pointer text-sm">
+                                        {addon.label}
+                                      </FormLabel>
+                                    </FormItem>
+                                  )}
+                                />
+                              ))}
+                            </div>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">All add-ons are included in your selected package.</p>
+                  )}
                 </CardContent>
               </Card>
 

@@ -163,10 +163,28 @@ const stripe = process.env.STRIPE_SECRET_KEY
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 // ── Pricing Engine ────────────────────────────────────────────────────────────
-function buildLineItems(form: any, s: any) {
+// ── Auto-upgrade: standard → deep clean if property exceeds thresholds ────────
+function resolveServiceType(form: any): "standard" | "deep" | "moveout" {
+  if (form.serviceType === "moveout") return "moveout";
+  if (
+    form.serviceType === "standard" && (
+      form.bathrooms > 1 ||
+      form.bedrooms >= 3 ||
+      form.squareFootage > 1500
+    )
+  ) {
+    return "deep";
+  }
+  return form.serviceType;
+}
+
+function buildLineItems(form: any, s: any, opts?: { isOvernight?: boolean }) {
   const items: { label: string; quantity: number; unitPrice: number; lineTotal: number }[] = [];
 
-  items.push({ label: "Base rate", quantity: 1, unitPrice: s.baseRate, lineTotal: s.baseRate });
+  // Overnight base rate replaces standard base rate
+  const baseRate = opts?.isOvernight ? (s.overnightBaseRate ?? 500) : s.baseRate;
+  const baseLabel = opts?.isOvernight ? "Overnight base rate" : "Base rate";
+  items.push({ label: baseLabel, quantity: 1, unitPrice: baseRate, lineTotal: baseRate });
 
   if (form.squareFootage > 0) {
     const sqftTotal = parseFloat((form.squareFootage * s.pricePerSqft).toFixed(2));
@@ -186,17 +204,23 @@ function buildLineItems(form: any, s: any) {
     items.push({ label: `Bathrooms (${form.bathrooms})`, quantity: form.bathrooms, unitPrice: s.perBathroom, lineTotal: form.bathrooms * s.perBathroom });
   }
 
-  if (form.serviceType === "deep") {
+  // Resolve effective service type (auto-upgrade standard → deep if needed)
+  const effectiveType = resolveServiceType(form);
+  if (effectiveType !== form.serviceType) {
+    items.push({ label: "Auto-upgraded to Deep Clean", quantity: 1, unitPrice: 0, lineTotal: 0 });
+  }
+  if (effectiveType === "deep") {
     items.push({ label: "Deep clean surcharge", quantity: 1, unitPrice: s.deepCleanSurcharge, lineTotal: s.deepCleanSurcharge });
-  } else if (form.serviceType === "moveout") {
+  } else if (effectiveType === "moveout") {
     items.push({ label: "Move-in/out surcharge", quantity: 1, unitPrice: s.moveoutSurcharge, lineTotal: s.moveoutSurcharge });
   }
 
+  // Add-ons (only available when service is standard; deep/moveout include them)
   const addonMap: Record<string, { label: string; price: number }> = {
     fridge:     { label: "Inside fridge",     price: s.fridgePrice },
-    oven:       { label: "Inside oven",        price: s.ovenPrice },
     windows:    { label: "Interior windows",   price: s.windowsPrice },
     baseboards: { label: "Baseboards",         price: s.baseboardsPrice },
+    grout:      { label: "Grout scrubbing",    price: s.groutPrice ?? 35 },
   };
   for (const addon of form.addons || []) {
     const a = addonMap[addon];
@@ -622,25 +646,43 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   });
 
   // POST /api/payment/intent — create a Stripe PaymentIntent for a quote
+  // Accepts optional `start` ISO string to apply overnight premium if slot is 11pm–7am
   app.post("/api/payment/intent", async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Payments not configured." });
-      const { quoteId } = req.body;
+      const { quoteId, start } = req.body;
       if (!quoteId) return res.status(400).json({ error: "quoteId required." });
 
       const db = getStorage();
       const q  = await db.getQuote(quoteId);
       if (!q) return res.status(404).json({ error: "Quote not found." });
+      const s  = await db.getSettings();
 
-      const amountCents = Math.round(q.total * 100);
+      // Apply overnight premium if slot is 11pm–7am ET
+      let total = q.total;
+      let isOvernightCharge = false;
+      if (start && s) {
+        const startHourStr = new Date(start).toLocaleString("en-CA", { timeZone: "America/Toronto", hour: "numeric", hour12: false });
+        const h = parseInt(startHourStr);
+        if (h >= 23 || h < 7) {
+          // Replace base rate with overnight base rate
+          const overnight = s.overnightBaseRate ?? 500;
+          const diff = overnight - s.baseRate;
+          total = parseFloat((q.total + diff).toFixed(2));
+          isOvernightCharge = true;
+        }
+      }
+
+      const amountCents = Math.round(total * 100);
       const intent = await stripe.paymentIntents.create({
         amount:   amountCents,
         currency: "cad",
-        metadata: { quoteId: q.id },
-        description: `Clean Wizz — Quote ${q.id.slice(0, 8)}`,
+        capture_method: "manual",  // auth hold — capture after job completion
+        metadata: { quoteId: q.id, isOvernight: String(isOvernightCharge) },
+        description: `Harry Spotter${isOvernightCharge ? " (Overnight)" : ""} — Quote ${q.id.slice(0, 8)}`,
       });
 
-      res.json({ clientSecret: intent.client_secret, amount: q.total });
+      res.json({ clientSecret: intent.client_secret, amount: total, isOvernight: isOvernightCharge });
     } catch (err: any) {
       console.error("[stripe] PaymentIntent error:", err.message);
       res.status(500).json({ error: err.message });
@@ -674,7 +716,60 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         quoteId:       q.id,
       });
 
-      // Update quote status to accepted
+      // Detect overnight slot (11pm–7am ET)
+      const startHour = new Date(start).toLocaleString("en-CA", { timeZone: "America/Toronto", hour: "numeric", hour12: false });
+      const hourNum   = parseInt(startHour);
+      const isOvernightSlot = hourNum >= 23 || hourNum < 7;
+
+      if (isOvernightSlot) {
+        // Overnight: hold as pending_review, do NOT cascade yet
+        await db.updateQuoteStatus(q.id, "pending_review" as any);
+
+        // Schedule a 7am owner alert (store in HS Supabase for the cron or send immediately if past 7am)
+        const now = new Date();
+        const ottawaNow = new Date(now.toLocaleString("en-US", { timeZone: "America/Toronto" }));
+        const sendAt = ottawaNow.getHours() >= 7
+          ? "now"
+          : `07:00 AM ET — ${ottawaNow.toLocaleDateString("en-CA", { timeZone: "America/Toronto", weekday: "long", month: "long", day: "numeric" })}`;
+
+        if (resend) {
+          const slotLabelON = new Date(start).toLocaleString("en-CA", {
+            timeZone: "America/Toronto", weekday: "long", month: "long",
+            day: "numeric", hour: "numeric", minute: "2-digit", hour12: true,
+          });
+          // Send immediately (Resend can schedule; for simplicity send now with context)
+          await resend.emails.send({
+            from: process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+            to:   "magic@harryspottercleaning.ca",
+            subject: `🌙 Overnight Booking Pending Review — ${client.name} on ${slotLabelON}`,
+            html: `
+              <div style="font-family:'Segoe UI',sans-serif;max-width:600px;margin:0 auto;padding:32px;">
+                <div style="background:linear-gradient(135deg,#0f0408 0%,#1a0a0e 100%);padding:24px 32px;border-radius:12px 12px 0 0;text-align:center;">
+                  <h1 style="color:#f9bc15;margin:0;font-size:20px;">Harry Spotter Cleaning Co.</h1>
+                  <p style="color:rgba(249,188,21,.7);margin:4px 0 0;font-size:12px;">🌙 Overnight Booking — Pending Your Review</p>
+                </div>
+                <div style="background:#fff;padding:28px 32px;border-radius:0 0 12px 12px;border:1px solid #e5e7eb;border-top:none;">
+                  <p style="color:#1a0a0e;font-size:15px;margin:0 0 16px;">An overnight booking has been placed and is <strong>awaiting your review</strong> before a contractor is assigned.</p>
+                  <table style="width:100%;border-collapse:collapse;margin:16px 0;">
+                    <tr><td style="padding:6px 0;color:#555;">Client</td><td><strong>${client.name}</strong></td></tr>
+                    <tr><td style="padding:6px 0;color:#555;">Email</td><td><a href="mailto:${client.email}">${client.email}</a></td></tr>
+                    <tr><td style="padding:6px 0;color:#555;">Phone</td><td>${client.phone || '—'}</td></tr>
+                    <tr><td style="padding:6px 0;color:#555;">Address</td><td>${client.address || '—'}</td></tr>
+                    <tr><td style="padding:6px 0;color:#555;">Slot</td><td><strong>${slotLabelON}</strong></td></tr>
+                    <tr><td style="padding:6px 0;color:#555;">Total (held)</td><td><strong>$${q.total.toFixed(2)} CAD</strong></td></tr>
+                    <tr><td style="padding:6px 0;color:#555;">Quote ID</td><td style="font-size:12px;color:#999;">${q.id}</td></tr>
+                  </table>
+                  <p style="color:#555;font-size:13px;margin:0;">Once you confirm parking, access, and any other requirements, manually trigger contractor assignment from the dashboard.</p>
+                </div>
+              </div>
+            `,
+          }).catch(e => console.error("[overnight] owner alert failed:", e));
+        }
+
+        return res.json({ success: true, status: "pending_review", eventLink });
+      }
+
+      // Regular booking: update to accepted and fire cascade
       await db.updateQuoteStatus(q.id, "accepted");
 
       // Auto-assign a contractor via cascade
@@ -1054,6 +1149,11 @@ function buildBookingHtml(
         <option value="">— Pick a date and time —</option>
         ${slotOptions}
       </select>
+      <div id="overnightNotice" style="display:none;margin-top:12px;background:linear-gradient(135deg,#0f0408,#1a0a0e);border-radius:12px;padding:14px 18px;">
+        <p style="color:#f9bc15;font-size:13px;font-weight:700;margin:0 0 4px;">&#127769; Overnight Appointment</p>
+        <p style="color:rgba(249,188,21,.8);font-size:12px;margin:0 0 4px;">An overnight premium applies. Your card will be authorized but <strong style="color:#f9bc15;">not charged</strong> until the appointment is confirmed by our team.</p>
+        <p style="color:rgba(249,188,21,.6);font-size:11px;margin:0;">We will contact you to confirm parking, access, and any other requirements before finalizing.</p>
+      </div>
 
       <hr class="divider">
 
@@ -1119,6 +1219,7 @@ function buildBookingHtml(
       </div>
 
       <button class="btn" id="payBtn" disabled>✨ Confirm, Agree &amp; Pay &mdash; $${quote.total.toFixed(2)} CAD</button>
+      <div id="totalDisplay" style="text-align:center;font-size:12px;color:#bab9b4;margin-top:6px;"></div>
 
       <div class="secure-note">
         <svg width="12" height="14" viewBox="0 0 12 14" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="5" width="10" height="8" rx="1.5" fill="#bab9b4"/><path d="M3.5 5V3.5a2.5 2.5 0 0 1 5 0V5" stroke="#bab9b4" stroke-width="1.2" stroke-linecap="round"/></svg>
@@ -1141,11 +1242,14 @@ function buildBookingHtml(
       var QUOTE_ID        = '${quote.id}';
       var BASE_URL        = '${baseUrl}';
 
-      var select     = document.getElementById('slot');
-      var termsChk   = document.getElementById('termsChk');
-      var payBtn     = document.getElementById('payBtn');
-      var msgEl      = document.getElementById('msg');
-      var cardErrors = document.getElementById('card-errors');
+      var select       = document.getElementById('slot');
+      var termsChk     = document.getElementById('termsChk');
+      var payBtn       = document.getElementById('payBtn');
+      var msgEl        = document.getElementById('msg');
+      var cardErrors   = document.getElementById('card-errors');
+      var overnightEl  = document.getElementById('overnightNotice');
+      var totalDisplay = document.getElementById('totalDisplay');
+      var baseTotal    = ${quote.total.toFixed(2)};
 
       if (!select || !payBtn) return;
 
@@ -1179,12 +1283,41 @@ function buildBookingHtml(
         updatePayBtn();
       });
 
+      function isOvernightStart(isoStr) {
+        if (!isoStr) return false;
+        var d = new Date(isoStr);
+        // Convert to ET hour
+        var etHour = parseInt(d.toLocaleString('en-CA', { timeZone: 'America/Toronto', hour: 'numeric', hour12: false }));
+        return etHour >= 23 || etHour < 7;
+      }
+
       function updatePayBtn() {
         payBtn.disabled = !(select && select.value && termsChk && termsChk.checked && cardComplete);
       }
 
-      select.addEventListener('change', updatePayBtn);
-      select.addEventListener('input', updatePayBtn);
+      function onSlotChange() {
+        updatePayBtn();
+        if (!select.value) {
+          if (overnightEl) overnightEl.style.display = 'none';
+          if (totalDisplay) totalDisplay.textContent = '';
+          payBtn.textContent = '\u2728 Confirm, Agree & Pay \u2014 $' + baseTotal.toFixed(2) + ' CAD';
+          return;
+        }
+        var parts = select.value.split('|');
+        var slotStart = parts[0];
+        if (isOvernightStart(slotStart)) {
+          if (overnightEl) overnightEl.style.display = 'block';
+          // Note: actual total shown after payment intent is created
+          if (totalDisplay) totalDisplay.textContent = 'Final total includes overnight premium \u2014 shown at payment step';
+        } else {
+          if (overnightEl) overnightEl.style.display = 'none';
+          if (totalDisplay) totalDisplay.textContent = '';
+          payBtn.textContent = '\u2728 Confirm, Agree & Pay \u2014 $' + baseTotal.toFixed(2) + ' CAD';
+        }
+      }
+
+      select.addEventListener('change', onSlotChange);
+      select.addEventListener('input', onSlotChange);
       termsChk.addEventListener('change', updatePayBtn);
 
       payBtn.addEventListener('click', async function() {
@@ -1200,10 +1333,13 @@ function buildBookingHtml(
           var intentRes = await fetch(BASE_URL + '/api/payment/intent', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ quoteId: QUOTE_ID }),
+            body: JSON.stringify({ quoteId: QUOTE_ID, start }),
           });
           var intentData = await intentRes.json();
           if (!intentRes.ok) throw new Error(intentData.error || 'Could not create payment.');
+
+          // Update button to show actual total (may include overnight premium)
+          payBtn.textContent = '\u2728 Confirm, Agree & Pay \u2014 $' + intentData.amount.toFixed(2) + ' CAD';
 
           var result = await stripe.confirmCardPayment(intentData.clientSecret, {
             payment_method: { card: cardElement },
@@ -1219,12 +1355,16 @@ function buildBookingHtml(
           var bookData = await bookRes.json();
 
           if (bookRes.ok && bookData.success) {
-            document.querySelectorAll('.step-label,.divider,.terms-box,#termsLabel,.card-section,.secure-note,#slot').forEach(function(el){ el.style.display='none'; });
+            document.querySelectorAll('.step-label,.divider,.terms-box,#termsLabel,.card-section,.secure-note,#slot,#overnightNotice,#totalDisplay').forEach(function(el){ el.style.display='none'; });
             payBtn.style.display = 'none';
             if (msgEl) {
               msgEl.className = 'msg success';
               msgEl.style.display = 'block';
-              msgEl.innerHTML = '\u2728 <strong>You\'re all booked!</strong> Payment received &mdash; a confirmation email is on its way. We look forward to making your space sparkle!';
+              if (bookData.status === 'pending_review') {
+                msgEl.innerHTML = '\ud83c\udf19 <strong>Overnight booking received!</strong> Your card has been pre-authorized. Our team will contact you within a few hours to confirm access details and finalize your appointment.';
+              } else {
+                msgEl.innerHTML = '\u2728 <strong>You\'re all booked!</strong> Payment received &mdash; a confirmation email is on its way. We look forward to making your space sparkle!';
+              }
             }
           } else {
             throw new Error(bookData.error || 'Booking failed after payment. Please contact us.');
@@ -1236,7 +1376,7 @@ function buildBookingHtml(
             msgEl.textContent = err.message || 'Something went wrong. Please try again or call us at 343-321-6242.';
           }
           payBtn.disabled = false;
-          payBtn.textContent = '\u2728 Confirm, Agree & Pay \u2014 $${quote.total.toFixed(2)} CAD';
+          payBtn.textContent = '\u2728 Confirm, Agree & Pay \u2014 $' + baseTotal.toFixed(2) + ' CAD';
         }
       });
     })();

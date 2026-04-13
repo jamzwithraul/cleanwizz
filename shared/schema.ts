@@ -74,12 +74,13 @@ export type PromoCode = typeof promoCodes.$inferSelect;
 // ── settings ─────────────────────────────────────────────────────────────────
 export const settings = sqliteTable("settings", {
   id: text("id").primaryKey().default("default"),
-  pricePerSqft: real("price_per_sqft").notNull().default(0.12),
-  baseRate: real("base_rate").notNull().default(80),
+  pricePerSqft: real("price_per_sqft").notNull().default(0.30),
+  baseRate: real("base_rate").notNull().default(100),
+  overnightBaseRate: real("overnight_base_rate").notNull().default(500),
   perBedroom: real("per_bedroom").notNull().default(15),
   perBathroom: real("per_bathroom").notNull().default(20),
-  fridgePrice: real("fridge_price").notNull().default(20),
-  ovenPrice: real("oven_price").notNull().default(25),
+  fridgePrice: real("fridge_price").notNull().default(25),
+  groutPrice: real("grout_price").notNull().default(35),
   windowsPrice: real("windows_price").notNull().default(40),
   baseboardsPrice: real("baseboards_price").notNull().default(30),
   deepCleanSurcharge: real("deep_clean_surcharge").notNull().default(60),
@@ -106,7 +107,7 @@ export const quoteFormSchema = z.object({
   specialNotes: z.string().default(""),
   // services
   serviceType: z.enum(["standard", "deep", "moveout"]).default("standard"),
-  addons: z.array(z.enum(["fridge", "oven", "windows", "baseboards"])).default([]),
+  addons: z.array(z.enum(["fridge", "windows", "baseboards", "grout"])).default([]),
   // promo
   promoCode: z.string().default(""),
 });
