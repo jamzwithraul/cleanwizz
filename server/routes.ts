@@ -695,16 +695,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
             // Update to accepted, store Stripe PaymentIntent ID, and fire cascade
       await db.updateQuoteStatus(q.id, "accepted", { paymentIntentId: paymentIntentId || null });
 
-      // Auto-assign a contractor via cascade
-      triggerCascadeAssignment({
-        quoteId:    String(q.id),
-        clientName: client.name,
-        clientAddr: client.address || "",
-        start,
-        end,
-        total:      q.total,
-        baseUrl:    process.env.BASE_URL || "https://api.harryspottercleaning.ca",
-      }).catch(e => console.error("[cascade] assignment failed:", e));
+      // Cascade auto-assignment DISABLED — owner controls contractor assignment manually.
+      // triggerCascadeAssignment({ ... });
 
       // Notify owner
       if (resend) {
