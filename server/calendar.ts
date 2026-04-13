@@ -14,7 +14,9 @@ function getAuth() {
   const key = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
   if (!key) throw new Error("GOOGLE_SERVICE_ACCOUNT_KEY env var not set");
 
-  const credentials = JSON.parse(key);
+  // Strip surrounding single-quotes that some env loaders preserve from .env files
+  const cleanKey = key.replace(/^'|'$/g, '');
+  const credentials = JSON.parse(cleanKey);
   return new google.auth.GoogleAuth({
     credentials,
     scopes: ["https://www.googleapis.com/auth/calendar"],

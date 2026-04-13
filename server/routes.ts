@@ -617,6 +617,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       res.setHeader("Content-Type", "text/html");
       res.send(buildBookingHtml(q, client?.name || "there", slots, baseUrl));
     } catch (err: any) {
+      console.error("[booking-page] error:", err?.message || err, err?.stack);
       res.status(500).send("An error occurred loading the booking page.");
     }
   });
@@ -876,6 +877,13 @@ function buildBookingHtml(
       var cardErrors = document.getElementById('card-errors');
 
       if (!select || !payBtn) return;
+
+      if (!PUBLISHABLE_KEY) {
+        payBtn.textContent = 'Payment setup in progress \u2014 please try again shortly';
+        payBtn.disabled = true;
+        if (cardErrors) cardErrors.textContent = 'Payment is being configured. If this persists, please call us at 343-321-6242.';
+        return;
+      }
 
       var stripe      = Stripe(PUBLISHABLE_KEY);
       var elements    = stripe.elements();
