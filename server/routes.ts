@@ -259,7 +259,7 @@ function buildEmailHtml(client: any, quote: any, items: any[], baseUrl: string) 
           <td style="color:#3d2b1f;font-size:14px;text-align:right;">$${quote.subtotal.toFixed(2)} CAD</td>
         </tr>
         <tr>
-          <td style="color:#166534;font-size:14px;padding:4px 0;">Promo (${quote.promoCode})</td>
+          <td style="color:#166534;font-size:14px;padding:4px 0;">Discount${quote.promoCode ? ` (${quote.promoCode})` : ''}</td>
           <td style="color:#166534;font-size:14px;text-align:right;">-$${quote.discount.toFixed(2)} CAD</td>
         </tr>
       </table>` : ""}
@@ -479,21 +479,40 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
       // Pricing — Transparent itemized breakdown
       const rawItems = buildLineItems(form, s);
-      const subtotal = rawItems.reduce((sum, i) => sum + i.lineTotal, 0);
+      const perSessionSubtotal = rawItems.reduce((sum, i) => sum + i.lineTotal, 0);
 
-      // Promo
-      let discount = 0;
+      // Multi-session: multiply line items if booking 2+ sessions
+      const sessions = form.numberOfSessions ?? 1;
+      let subtotal = perSessionSubtotal;
+      if (sessions > 1) {
+        subtotal = parseFloat((perSessionSubtotal * sessions).toFixed(2));
+        rawItems.forEach(i => {
+          i.lineTotal = parseFloat((i.lineTotal * sessions).toFixed(2));
+          if (i.quantity !== 1) i.quantity = i.quantity * sessions;
+        });
+        rawItems.unshift({ label: `× ${sessions} cleaning sessions`, quantity: sessions, unitPrice: 0, lineTotal: 0, category: "sessions" });
+      }
+
+      // Multi-booking discount: 20% off for 2+ sessions
+      let multiDiscount = 0;
+      if (sessions >= 2) {
+        multiDiscount = parseFloat((subtotal * 0.20).toFixed(2));
+      }
+
+      // Promo code discount (applied after multi-booking discount)
+      let promoDiscount = 0;
       let usedPromo: string | null = null;
       if (form.promoCode) {
         const pc = await db.getPromoCode(form.promoCode);
         if (pc && pc.active) {
-          discount = pc.type === "percent"
-            ? parseFloat((subtotal * pc.value / 100).toFixed(2))
+          promoDiscount = pc.type === "percent"
+            ? parseFloat(((subtotal - multiDiscount) * pc.value / 100).toFixed(2))
             : pc.value;
           usedPromo = pc.code;
         }
       }
 
+      const discount = parseFloat((multiDiscount + promoDiscount).toFixed(2));
       const afterDiscount = parseFloat((subtotal - discount).toFixed(2));
       const tax = parseFloat((afterDiscount * HST_RATE).toFixed(2));
       const total = parseFloat((afterDiscount + tax).toFixed(2));
@@ -533,6 +552,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         sqftTotal: rawItems.find(i => i.category === "sqft")?.lineTotal ?? 0,
         addons:    rawItems.filter(i => i.category === "addon").map(i => ({ label: i.label, amount: i.lineTotal })),
         surcharge: rawItems.find(i => i.category === "surcharge")?.lineTotal ?? 0,
+        numberOfSessions: sessions,
+        multiDiscount,
+        promoDiscount,
         subtotal,
         discount,
         afterDiscount,
@@ -765,37 +787,122 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           `,
         }).catch(e => console.error("[booking] Owner notify failed:", e));
 
-        // Send confirmation email to client
+        // Send confirmation email to client — full branded receipt
+        const receiptItemRows = items.map(i =>
+          `<tr>
+            <td style="padding:8px 12px;border-bottom:1px solid #f0ece8;color:#5a4a3a;font-size:14px;">${i.label}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #f0ece8;color:#3d2b1f;font-size:14px;text-align:right;">$${i.lineTotal.toFixed(2)}</td>
+          </tr>`
+        ).join("");
+
+        // Parse the services JSON for a readable label
+        let serviceLabel = q.propertyType || "Cleaning";
+        try {
+          const sArr = JSON.parse(q.services || "[]");
+          if (sArr.length > 0) {
+            const sMap: Record<string, string> = { standard: "Standard Clean", deep: "Deep Clean", moveout: "Move-In / Move-Out" };
+            serviceLabel = sMap[sArr[0]] || sArr[0];
+          }
+        } catch {}
+
         await resend.emails.send({
           from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
           to:      client.email,
           subject: `📅 Your Cleaning is Booked — ${slotLabel}`,
-          html: `
-            <div style="font-family:'Segoe UI',sans-serif;max-width:600px;margin:0 auto;">
-              <div style="background:linear-gradient(135deg,#6b1629 0%,#a01733 60%,#78420e 100%);padding:28px 36px;border-radius:12px 12px 0 0;text-align:center;">
-                <h1 style="color:#f9bc15;margin:0;font-size:22px;font-weight:800;">Harry Spotter Cleaning Co.</h1>
-                <p style="color:#fde68a;margin:4px 0 0;font-size:13px;">Ottawa’s Magical Cleaning Team</p>
-              </div>
-              <div style="background:#fff;padding:32px 36px;border:1px solid #f4a3b2;border-top:none;border-radius:0 0 12px 12px;">
-                <h2 style="color:#6b1629;font-size:20px;margin:0 0 8px;">Hi ${client.name}, you’re booked! ✨</h2>
-                <p style="color:#5a4a3a;font-size:15px;margin:0 0 24px;">Here’s a summary of your upcoming cleaning appointment.</p>
+          html: `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Booking Confirmation &amp; Receipt</title></head>
+<body style="margin:0;padding:0;background:#fdf8f0;font-family:'Segoe UI',Arial,sans-serif;">
+  <div style="max-width:600px;margin:40px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 32px rgba(110,22,41,0.12);">
 
-                <div style="background:#fdf2f4;border:1px solid #f4a3b2;border-radius:8px;padding:16px 20px;margin-bottom:24px;">
-                  <p style="margin:0;font-size:16px;font-weight:700;color:#a01733;">📅 ${slotLabel}</p>
-                  <p style="margin:6px 0 0;font-size:14px;color:#7a7974;">${client.address || ""}</p>
-                </div>
+    <!-- Header -->
+    <div style="background:linear-gradient(135deg,#6b1629 0%,#a01733 60%,#78420e 100%);padding:32px 40px;text-align:center;">
+      <h1 style="color:#f9bc15;margin:0;font-size:24px;font-weight:800;letter-spacing:0.5px;">Harry Spotter Cleaning Co.</h1>
+      <p style="color:#fde68a;margin:6px 0 0;font-size:13px;letter-spacing:0.5px;">Ottawa's Magical Cleaning Team</p>
+    </div>
 
-                <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
-                  <tr><td style="padding:6px 0;color:#7a7974;font-size:14px;">Service</td><td style="color:#28251d;font-size:14px;">${q.propertyType}</td></tr>
-                  <tr><td style="padding:6px 0;color:#7a7974;font-size:14px;">Total</td><td style="color:#28251d;font-size:14px;font-weight:700;">$${q.total.toFixed(2)} CAD</td></tr>
-                </table>
+    <!-- Body -->
+    <div style="padding:36px 40px;">
+      <h2 style="color:#6b1629;font-size:22px;margin:0 0 6px;">Hi ${client.name}, you're booked! ✨</h2>
+      <p style="color:#5a4a3a;font-size:15px;margin:0 0 24px;line-height:1.6;">Here's your booking confirmation and receipt for your records.</p>
 
-                <p style="color:#7a7974;font-size:13px;margin:0;">Questions? Reply to this email or call us directly. We look forward to seeing you!</p>
+      <!-- Appointment card -->
+      <div style="background:#fdf2f4;border:2px solid #f4a3b2;border-radius:12px;padding:20px 24px;margin-bottom:24px;">
+        <p style="margin:0 0 6px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#a01733;font-weight:700;">Appointment Details</p>
+        <table style="width:100%;border-collapse:collapse;">
+          <tr><td style="padding:5px 0;color:#7a7974;font-size:14px;width:120px;">Date &amp; Time</td><td style="color:#3d2b1f;font-size:14px;font-weight:700;">${slotLabel}</td></tr>
+          <tr><td style="padding:5px 0;color:#7a7974;font-size:14px;">Address</td><td style="color:#3d2b1f;font-size:14px;">${client.address || "—"}</td></tr>
+          <tr><td style="padding:5px 0;color:#7a7974;font-size:14px;">Package</td><td style="color:#3d2b1f;font-size:14px;">${serviceLabel}</td></tr>
+          <tr><td style="padding:5px 0;color:#7a7974;font-size:14px;">Property</td><td style="color:#3d2b1f;font-size:14px;">${q.squareFootage ? q.squareFootage + ' sq ft' : ''} ${q.propertyType || ''}</td></tr>
+        </table>
+      </div>
 
-                <p style="margin:24px 0 0;font-size:12px;color:#bab9b4;">Harry Spotter Cleaning Co. · quotes@harryspottercleaning.ca</p>
-              </div>
-            </div>
-          `,
+      <!-- Itemized receipt -->
+      <p style="margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#a01733;font-weight:700;">Itemized Receipt</p>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:16px;">
+        <thead>
+          <tr style="background:#fdf2f4;">
+            <th style="padding:10px 12px;text-align:left;font-size:12px;color:#7e162c;font-weight:700;border-bottom:2px solid #f4a3b2;text-transform:uppercase;letter-spacing:0.5px;">Item</th>
+            <th style="padding:10px 12px;text-align:right;font-size:12px;color:#7e162c;font-weight:700;border-bottom:2px solid #f4a3b2;text-transform:uppercase;letter-spacing:0.5px;">Amount</th>
+          </tr>
+        </thead>
+        <tbody>${receiptItemRows}</tbody>
+      </table>
+
+      ${q.discount > 0 ? `
+      <table style="width:100%;border-collapse:collapse;margin-bottom:8px;">
+        <tr>
+          <td style="color:#5a4a3a;font-size:14px;padding:4px 0;">Subtotal</td>
+          <td style="color:#3d2b1f;font-size:14px;text-align:right;">$${q.subtotal.toFixed(2)} CAD</td>
+        </tr>
+        <tr>
+          <td style="color:#166534;font-size:14px;padding:4px 0;">Discount${q.promoCode ? ` (${q.promoCode})` : ''}</td>
+          <td style="color:#166534;font-size:14px;text-align:right;">-$${q.discount.toFixed(2)} CAD</td>
+        </tr>
+      </table>` : ""}
+
+      ${items.some((i: any) => i.label === "In-Oven Cleaning") ? `
+      <div style="background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;padding:12px 16px;margin-bottom:16px;">
+        <p style="margin:0;color:#92400e;font-size:12px;line-height:1.5;"><strong>&#9888;&#65039; Oven Cleaning Notice:</strong> Easy-Off is used for deep oven cleaning. This product emits a strong odour. We recommend opening windows for ventilation during and after the service.</p>
+      </div>` : ""}
+
+      <!-- Total -->
+      <div style="background:linear-gradient(135deg,#fdf2f4,#fff8e6);border:2px solid #f4a3b2;border-radius:12px;padding:18px 20px;margin-bottom:24px;">
+        <table style="width:100%;border-collapse:collapse;">
+          <tr>
+            <td style="font-size:16px;font-weight:700;color:#3d2b1f;">Total Charged (incl. HST)</td>
+            <td style="font-size:24px;font-weight:800;color:#a01733;text-align:right;">$${q.total.toFixed(2)} <span style="font-size:13px;font-weight:600;color:#7a6550;">CAD</span></td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- Payment confirmation -->
+      <div style="text-align:center;margin-bottom:20px;">
+        <span style="display:inline-block;background:#f0fdf4;border:1px solid #86efac;border-radius:50px;padding:6px 16px;font-size:12px;color:#166534;font-weight:600;">&#10003; Payment Confirmed &mdash; Keep this email as your receipt</span>
+      </div>
+
+      <!-- Notes -->
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px 18px;margin-bottom:24px;">
+        <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:#475569;">Please Note</p>
+        <ul style="margin:0;padding-left:16px;font-size:12px;color:#64748b;line-height:1.7;">
+          <li>Your cleaning specialist provides all cleaning solutions, broom, mop, and vacuum.</li>
+          <li>For sanitary reasons, the client must supply their own toilet brush.</li>
+          <li>To cancel or reschedule, please contact us at least 48 hours before your appointment.</li>
+        </ul>
+      </div>
+
+      <p style="color:#7a7974;font-size:13px;margin:0 0 8px;">Questions? Call us at <a href="tel:3433216242" style="color:#a01733;font-weight:600;">343-321-6242</a> or reply to this email.</p>
+    </div>
+
+    <!-- Footer -->
+    <div style="padding:20px 40px;background:linear-gradient(135deg,#4a0f1c,#3d0c16);border-top:3px solid #f9bc15;text-align:center;">
+      <p style="color:#fde68a;font-size:13px;font-weight:600;margin:0 0 4px;">Harry Spotter Cleaning Co.</p>
+      <p style="color:#c4a87a;font-size:12px;margin:0 0 4px;">Ottawa, Ontario &middot; harryspottercleaning.ca</p>
+      <p style="color:#8a6a50;font-size:11px;margin:0;">Booking Reference: ${q.id.slice(0, 8)}</p>
+    </div>
+
+  </div>
+</body>
+</html>`,
         }).catch(e => console.error("[booking] Client confirm email failed:", e));
       }
 

@@ -28,7 +28,7 @@ function getAuth() {
 // Site posted hours are 8 AM – 8 PM but bookable slots use these windows.
 const SLOT_WINDOWS = [
   { start: 8, end: 11 },  // morning block
-  { start: 13, end: 17 }, // afternoon block
+  { start: 13, end: 19 }, // afternoon block (last 2-hr slot starts at 5 PM, ends 7 PM)
 ];
 const SLOT_DURATION_HOURS = 2; // each cleaning slot is 2 hours
 const DAYS_AHEAD = 14; // show availability 2 weeks out
