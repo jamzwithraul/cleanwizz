@@ -158,21 +158,6 @@ const stripe = process.env.STRIPE_SECRET_KEY
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 // ── Pricing Engine ────────────────────────────────────────────────────────────
-// ── Auto-upgrade: standard → deep clean if property exceeds thresholds ────────
-function resolveServiceType(form: any): "standard" | "deep" | "moveout" {
-  if (form.serviceType === "moveout") return "moveout";
-  if (
-    form.serviceType === "standard" && (
-      form.bathrooms > 1 ||
-      form.bedrooms >= 3 ||
-      form.squareFootage > 1500
-    )
-  ) {
-    return "deep";
-  }
-  return form.serviceType;
-}
-
 // ── Transparent Pricing Constants ─────────────────────────────────────────────
 const BASE_FEE = 300;              // minimum / base fee ($300 covers 0–1000 sq ft)
 const SQFT_RATE = 0.26;            // per-square-foot rate
@@ -199,14 +184,10 @@ function buildLineItems(form: any, s: any) {
     });
   }
 
-  // 3. Resolve effective service type (auto-upgrade standard → deep if needed)
-  const effectiveType = resolveServiceType(form);
-  if (effectiveType !== form.serviceType) {
-    items.push({ label: "Auto-upgraded to Deep Clean", quantity: 1, unitPrice: 0, lineTotal: 0, category: "upgrade" });
-  }
-  if (effectiveType === "deep") {
+  // 3. Service type surcharges (client picks their package — no auto-upgrade)
+  if (form.serviceType === "deep") {
     items.push({ label: "Deep clean surcharge", quantity: 1, unitPrice: s.deepCleanSurcharge, lineTotal: s.deepCleanSurcharge, category: "surcharge" });
-  } else if (effectiveType === "moveout") {
+  } else if (form.serviceType === "moveout") {
     items.push({ label: "Move-in/out surcharge", quantity: 1, unitPrice: s.moveoutSurcharge, lineTotal: s.moveoutSurcharge, category: "surcharge" });
   }
 
@@ -222,7 +203,7 @@ function buildLineItems(form: any, s: any) {
     const a = addonMap[addon];
     if (!a) continue;
     // Oven add-on is always available; other add-ons only for standard
-    if (addon !== "oven" && effectiveType !== "standard") continue;
+    if (addon !== "oven" && form.serviceType !== "standard") continue;
     items.push({ label: a.label, quantity: 1, unitPrice: a.price, lineTotal: a.price, category: "addon" });
   }
 
