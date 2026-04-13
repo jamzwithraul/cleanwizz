@@ -14,12 +14,18 @@ declare module "http" {
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
 // Allows frontends to reach this Railway backend across origins.
-// Set ALLOWED_ORIGINS (comma-separated) in Railway env vars.
-// Falls back to ALLOWED_ORIGIN for backwards compatibility.
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || process.env.ALLOWED_ORIGIN || "")
+// Hardcoded defaults ensure both the booking widget (harryspottercleaning.ca)
+// and the quote dashboard (quotes.harryspottercleaning.ca) always work.
+// ALLOWED_ORIGINS env var can add additional origins if needed.
+const DEFAULT_ORIGINS = [
+  "https://harryspottercleaning.ca",
+  "https://quotes.harryspottercleaning.ca",
+];
+const envOrigins = (process.env.ALLOWED_ORIGINS || process.env.ALLOWED_ORIGIN || "")
   .split(",")
   .map((o) => o.trim())
   .filter(Boolean);
+const allowedOrigins = [...new Set([...DEFAULT_ORIGINS, ...envOrigins])];
 
 app.use((req, res, next) => {
   const requestOrigin = req.headers.origin || "";
