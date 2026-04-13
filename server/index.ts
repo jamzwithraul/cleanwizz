@@ -25,7 +25,7 @@ const envOrigins = (process.env.ALLOWED_ORIGINS || process.env.ALLOWED_ORIGIN ||
   .split(",")
   .map((o) => o.trim())
   .filter(Boolean);
-const allowedOrigins = [...new Set([...DEFAULT_ORIGINS, ...envOrigins])];
+const allowedOrigins = Array.from(new Set([...DEFAULT_ORIGINS, ...envOrigins]));
 
 app.use((req, res, next) => {
   const requestOrigin = req.headers.origin || "";
