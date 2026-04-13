@@ -7,6 +7,154 @@ import { Resend } from "resend";
 import { quoteFormSchema } from "@shared/schema";
 import { getAvailableSlots, bookSlot } from "./calendar";
 import Stripe from "stripe";
+import { createClient } from "@supabase/supabase-js";
+
+// ── Harry Spotter Supabase (contractor data) ──────────────────────────────────
+const HS_SUPABASE_URL  = process.env.HS_SUPABASE_URL  || "https://gjfeqnfmwbsfwnbepwvu.supabase.co";
+const HS_SERVICE_KEY   = process.env.HS_SUPABASE_SERVICE_ROLE_KEY || "";
+const hsSupa = HS_SERVICE_KEY ? createClient(HS_SUPABASE_URL, HS_SERVICE_KEY) : null;
+
+// ── Cascade Assignment ────────────────────────────────────────────────────────
+// Round-robin, 2h window if job ≥24h away, 30min if 6–24h, manual if <6h.
+async function triggerCascadeAssignment(opts: {
+  quoteId:     string;
+  clientName:  string;
+  clientAddr:  string;
+  start:       string;
+  end:         string;
+  total:       number;
+  baseUrl:     string;
+}) {
+  if (!hsSupa || !resend) return;
+
+  const jobStart    = new Date(opts.start);
+  const hoursAway   = (jobStart.getTime() - Date.now()) / 36e5;
+
+  // Under 6 hours — notify owner for manual assignment
+  if (hoursAway < 6) {
+    await resend.emails.send({
+      from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+      to:      "magic@harryspottercleaning.ca",
+      subject: `⚠️ Urgent — Manual Assignment Needed (job in ${Math.round(hoursAway * 60)} min)`,
+      html: `<p>A client just booked a job starting in <strong>${Math.round(hoursAway * 60)} minutes</strong>. Please assign a contractor manually.</p>
+             <p>Quote: ${opts.quoteId} | Client: ${opts.clientName} | ${opts.clientAddr}</p>
+             <p>Time: ${new Date(opts.start).toLocaleString("en-CA", { timeZone: "America/Toronto" })}</p>`,
+    }).catch(console.error);
+    return;
+  }
+
+  const windowMins = hoursAway >= 24 ? 120 : 30;
+
+  // Get approved contractors in round-robin order
+  const { data: state } = await hsSupa.from("cascade_state").select("last_contractor_index").eq("id", "singleton").single();
+  const lastIdx = state?.last_contractor_index ?? 0;
+
+  const { data: contractors } = await hsSupa
+    .from("contractor_applications")
+    .select("id, full_name, email")
+    .eq("status", "approved")
+    .order("cascade_order", { ascending: true });
+
+  if (!contractors || contractors.length === 0) {
+    // No contractors — notify owner
+    await resend.emails.send({
+      from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+      to:      "magic@harryspottercleaning.ca",
+      subject: `⚠️ No contractors available — ${opts.clientName}`,
+      html: `<p>No approved contractors found. Please assign manually.</p><p>Quote: ${opts.quoteId}</p>`,
+    }).catch(console.error);
+    return;
+  }
+
+  // Rotate starting contractor
+  const startIdx  = lastIdx % contractors.length;
+  const contractor = contractors[startIdx];
+
+  // Update round-robin pointer
+  await hsSupa.from("cascade_state").update({ last_contractor_index: startIdx + 1, updated_at: new Date().toISOString() }).eq("id", "singleton");
+
+  // Record cascade assignment
+  const expiresAt = new Date(Date.now() + windowMins * 60 * 1000).toISOString();
+  await hsSupa.from("job_cascade_assignments").insert({
+    quote_id:         opts.quoteId,
+    contractor_id:    contractor.id,
+    expires_at:       expiresAt,
+    status:           "pending",
+    cascade_position: 1,
+  });
+
+  // Build accept / decline URLs (Harry Spotter portal)
+  const acceptUrl  = `https://harryspottercleaning.ca/contractor?action=accept&jobId=${opts.quoteId}&cid=${contractor.id}`;
+  const declineUrl = `${opts.baseUrl}/api/cascade/decline?quoteId=${opts.quoteId}&cid=${contractor.id}`;
+
+  const slotLabel = new Date(opts.start).toLocaleString("en-CA", {
+    timeZone: "America/Toronto", weekday: "long", month: "long",
+    day: "numeric", hour: "numeric", minute: "2-digit", hour12: true,
+  });
+  const isOvernight = (() => { const h = new Date(opts.start).getHours(); return h >= 22 || h < 6; })();
+
+  await resend.emails.send({
+    from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+    to:      contractor.email,
+    subject: `✨ New Mission${isOvernight ? " (Overnight — Premium Payout)" : ""} — ${slotLabel}`,
+    html: buildContractorMissionEmail({
+      contractorName: contractor.full_name,
+      slotLabel,
+      clientAddr:     opts.clientAddr,
+      total:          opts.total,
+      isOvernight,
+      windowMins,
+      acceptUrl,
+      declineUrl,
+      logoUrl:        `${opts.baseUrl}/api/assets/logo`,
+    }),
+  }).catch(console.error);
+}
+
+function buildContractorMissionEmail(o: {
+  contractorName: string;
+  slotLabel:      string;
+  clientAddr:     string;
+  total:          number;
+  isOvernight:    boolean;
+  windowMins:     number;
+  acceptUrl:      string;
+  declineUrl:     string;
+  logoUrl:        string;
+}) {
+  const headerGrad = o.isOvernight
+    ? "linear-gradient(135deg,#0f0408 0%,#1a0a0e 50%,#2a0f14 100%)"
+    : "linear-gradient(135deg,#6b1629 0%,#a01733 60%,#78420e 100%)";
+  const windowLabel = o.windowMins >= 60 ? `${o.windowMins / 60} hour${o.windowMins > 60 ? "s" : ""}` : `${o.windowMins} minutes`;
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body style="margin:0;padding:0;background:#f7f6f2;font-family:'Segoe UI',sans-serif;">
+<div style="max-width:560px;margin:32px auto;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.12);">
+  <div style="background:${headerGrad};padding:28px 36px;text-align:center;">
+    <img src="${o.logoUrl}" alt="Harry Spotter" style="width:72px;height:72px;border-radius:50%;background:#fff;padding:6px;object-fit:contain;margin-bottom:12px;display:block;margin-left:auto;margin-right:auto;">
+    <h1 style="color:#f9bc15;margin:0;font-size:22px;font-weight:800;">Harry Spotter Cleaning Co.</h1>
+    <p style="color:rgba(249,188,21,.75);margin:4px 0 0;font-size:12px;">${o.isOvernight ? "🌙 Overnight Mission — Premium Payout" : "New Mission Available"}</p>
+  </div>
+  <div style="background:#fff;padding:28px 36px;">
+    <p style="font-size:16px;color:#1a0a0e;margin:0 0 16px;">Hi <strong>${o.contractorName}</strong>,</p>
+    <p style="font-size:14px;color:#5a4a3a;margin:0 0 20px;line-height:1.6;">A client has booked a cleaning and you’ve been selected for the mission. ${o.isOvernight ? "This is an <strong>overnight appointment</strong> — it includes a <strong>premium payout</strong> on top of your standard rate." : ""} You have <strong>${windowLabel}</strong> to accept before it’s offered to the next available specialist.</p>
+    <div style="background:linear-gradient(135deg,#fdf2f4,#fff8e6);border:1.5px solid #f4a3b2;border-radius:12px;padding:16px 20px;margin-bottom:24px;">
+      <p style="margin:0 0 6px;font-size:13px;color:#7a7974;">Appointment</p>
+      <p style="margin:0;font-size:16px;font-weight:700;color:#a01733;">📅 ${o.slotLabel}</p>
+      <p style="margin:6px 0 0;font-size:13px;color:#7a7974;">📍 ${o.clientAddr}</p>
+    </div>
+    <div style="text-align:center;margin-bottom:16px;">
+      <a href="${o.acceptUrl}" style="display:inline-block;background:linear-gradient(135deg,#a01733,#7e162c);color:#f9bc15;text-decoration:none;padding:14px 36px;border-radius:50px;font-weight:700;font-size:15px;">Accept This Mission ✨</a>
+    </div>
+    <div style="text-align:center;margin-bottom:20px;">
+      <a href="${o.declineUrl}" style="font-size:12px;color:#bab9b4;text-decoration:underline;">I cannot take this job</a>
+    </div>
+    <p style="font-size:11px;color:#bab9b4;text-align:center;margin:0;">This offer expires in ${windowLabel}. If you do not respond, the job will be offered to the next specialist.</p>
+  </div>
+  <div style="background:#1a0a0e;padding:14px 36px;text-align:center;border-top:2px solid #f9bc15;">
+    <p style="color:rgba(249,188,21,.5);font-size:11px;margin:0;">Harry Spotter Cleaning Co. · harryspottercleaning.ca</p>
+  </div>
+</div>
+</body></html>`;
+}
 
 const stripe = process.env.STRIPE_SECRET_KEY
   ? new Stripe(process.env.STRIPE_SECRET_KEY)
@@ -529,6 +677,17 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       // Update quote status to accepted
       await db.updateQuoteStatus(q.id, "accepted");
 
+      // Auto-assign a contractor via cascade
+      triggerCascadeAssignment({
+        quoteId:    String(q.id),
+        clientName: client.name,
+        clientAddr: client.address || "",
+        start,
+        end,
+        total:      q.total,
+        baseUrl:    process.env.BASE_URL || "https://api.harryspottercleaning.ca",
+      }).catch(e => console.error("[cascade] assignment failed:", e));
+
       // Notify owner
       if (resend) {
         const items = await db.getQuoteItems(q.id);
@@ -598,6 +757,118 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     } catch (err: any) {
       console.error("[booking] Failed to book slot:", err.message);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/cascade/decline — contractor declines a mission; triggers next in cascade
+  app.get("/api/cascade/decline", async (req, res) => {
+    const { quoteId, cid } = req.query as { quoteId?: string; cid?: string };
+    if (!quoteId || !cid) {
+      return res.status(400).send("<p>Invalid decline link.</p>");
+    }
+    if (!hsSupa) {
+      return res.status(503).send("<p>Cascade service unavailable.</p>");
+    }
+    try {
+      // Mark this assignment as declined
+      const { data: declinedAssignment } = await hsSupa
+        .from("job_cascade_assignments")
+        .update({ status: "declined", declined_at: new Date().toISOString() })
+        .eq("quote_id", quoteId)
+        .eq("contractor_id", cid)
+        .eq("status", "pending")
+        .select("cascade_position")
+        .single();
+
+      const nextPosition = (declinedAssignment?.cascade_position ?? 1) + 1;
+
+      const { data: contractors } = await hsSupa
+        .from("contractor_applications")
+        .select("id, full_name, email")
+        .eq("status", "approved")
+        .order("cascade_order", { ascending: true });
+
+      // Check if we've exhausted all contractors
+      if (!contractors || nextPosition > contractors.length) {
+        // Notify owner — nobody left
+        if (resend) {
+          await resend.emails.send({
+            from: process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+            to:   "magic@harryspottercleaning.ca",
+            subject: `⚠️ All contractors declined — Quote #${quoteId}`,
+            html: `<p>All contractors have declined or timed out for quote <strong>${quoteId}</strong>. Please assign manually.</p>`,
+          }).catch(console.error);
+        }
+        return res.send(`<!DOCTYPE html><html><head><title>Declined</title></head><body style="font-family:sans-serif;text-align:center;padding:60px;">
+          <h2>Got it — thanks for letting us know.</h2><p>This job has been returned to the team for re-assignment.</p>
+        </body></html>`);
+      }
+
+      // Get quote details + job start time for the next email
+      const db = getStorage();
+      const q  = await db.getQuote(quoteId);
+      if (!q) return res.status(404).send("Quote not found.");
+      const client = await db.getClient(q.clientId);
+
+      // Look up scheduled_start from the jobs table (linked by quote_id)
+      const { data: jobRow } = await hsSupa
+        .from("jobs")
+        .select("scheduled_start")
+        .eq("quote_id", quoteId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .single();
+
+      // Pick next contractor (position is 1-indexed, array is 0-indexed)
+      const nextContractor = contractors[(nextPosition - 1) % contractors.length];
+
+      const baseUrl    = process.env.BASE_URL || "https://api.harryspottercleaning.ca";
+      const startStr   = jobRow?.scheduled_start ?? new Date(Date.now() + 86400000).toISOString();
+      const hoursAway  = (new Date(startStr).getTime() - Date.now()) / 36e5;
+      const windowMins = hoursAway >= 24 ? 120 : 30;
+      const expiresAt  = new Date(Date.now() + windowMins * 60 * 1000).toISOString();
+
+      await hsSupa.from("job_cascade_assignments").insert({
+        quote_id:         quoteId,
+        contractor_id:    nextContractor.id,
+        expires_at:       expiresAt,
+        status:           "pending",
+        cascade_position: nextPosition,
+      });
+
+      const slotLabel = new Date(startStr).toLocaleString("en-CA", {
+        timeZone: "America/Toronto", weekday: "long", month: "long",
+        day: "numeric", hour: "numeric", minute: "2-digit", hour12: true,
+      });
+      const isOvernight = (() => { const h = new Date(startStr).getHours(); return h >= 22 || h < 6; })();
+      const acceptUrl  = `https://harryspottercleaning.ca/contractor?action=accept&jobId=${quoteId}&cid=${nextContractor.id}`;
+      const declineUrl = `${baseUrl}/api/cascade/decline?quoteId=${quoteId}&cid=${nextContractor.id}`;
+
+      if (resend) {
+        await resend.emails.send({
+          from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+          to:      nextContractor.email,
+          subject: `✨ New Mission${isOvernight ? " (Overnight — Premium Payout)" : ""} — ${slotLabel}`,
+          html: buildContractorMissionEmail({
+            contractorName: nextContractor.full_name,
+            slotLabel,
+            clientAddr:     client?.address || "",
+            total:          q.total,
+            isOvernight,
+            windowMins,
+            acceptUrl,
+            declineUrl,
+            logoUrl: `${baseUrl}/api/assets/logo`,
+          }),
+        }).catch(console.error);
+      }
+
+      res.send(`<!DOCTYPE html><html><head><title>Declined</title></head><body style="font-family:sans-serif;text-align:center;padding:60px;">
+        <h2>Got it — thanks for letting us know.</h2><p>The job has been offered to the next available specialist.</p>
+      </body></html>`);
+    } catch (err: any) {
+      console.error("[cascade/decline] error:", err?.message || err);
+      res.status(500).send("<p>Something went wrong. Please contact the team.</p>");
     }
   });
 
