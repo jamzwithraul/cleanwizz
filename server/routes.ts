@@ -1284,9 +1284,11 @@ function buildBookingHtml(
         <div class="terms-section">
           <h4>Cancellation Policy</h4>
           <ul>
-            <li><strong>24+ hours before appointment:</strong> Full refund.</li>
-            <li><strong>Less than 24 hours:</strong> No refund &mdash; a dedicated team and supplies have been reserved for your booking.</li>
+            <li>Full refund if cancelled 24+ hours before your appointment.</li>
+            <li>No refund if cancelled within 24 hours of the appointment time.</li>
+            <li>If we cannot access the home at the scheduled time (locked out, no key/code, no entry), the appointment is treated as a late cancellation and is non-refundable.</li>
           </ul>
+          <p style="font-size:12px;color:#94a3b8;margin-top:8px;font-style:italic;">This policy ensures fairness, protects our cleaning specialists&rsquo; time, and keeps our scheduling reliable for all clients.</p>
         </div>
 
         <div class="terms-section">

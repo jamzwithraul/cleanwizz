@@ -60,10 +60,10 @@ const SERVICE_OPTIONS = [
 ] as const;
 
 const ADDON_OPTIONS = [
-  { id: "fridge",     label: "Inside Fridge" },
-  { id: "windows",   label: "Interior Windows" },
-  { id: "baseboards",label: "Baseboards" },
-  { id: "grout",     label: "Grout Scrubbing" },
+  { id: "fridge",     label: "Inside Fridge ($25)" },
+  { id: "windows",   label: "Interior Windows ($40)" },
+  { id: "baseboards",label: "Baseboards ($30)" },
+  { id: "grout",     label: "Grout Scrubbing ($35)" },
 ] as const;
 
 const PROPERTY_TYPES = [
