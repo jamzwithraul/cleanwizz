@@ -1093,6 +1093,223 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       res.status(500).send("An error occurred loading the booking page.");
     }
   });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // POST /api/job/complete — Job-complete pipeline
+  //   1. Capture Stripe auth hold (manual PaymentIntent)
+  //   2. Update job status in Harry Spotter Supabase
+  //   3. Send thank-you email to client
+  //   4. If client hasn't booked another job → generate 7-day discount code & include
+  // ══════════════════════════════════════════════════════════════════════════════
+  app.post("/api/job/complete", async (req, res) => {
+    try {
+      const { jobId, contractorId } = req.body;
+      if (!jobId) return res.status(400).json({ error: "jobId is required." });
+
+      // ── Step 1: Get job details from Harry Spotter Supabase ──
+      if (!hsSupa) return res.status(503).json({ error: "Harry Spotter Supabase not configured." });
+
+      const { data: job, error: jobErr } = await hsSupa
+        .from("jobs")
+        .select("*")
+        .eq("id", jobId)
+        .single();
+      if (jobErr || !job) return res.status(404).json({ error: "Job not found." });
+      if (job.status === "completed") return res.status(400).json({ error: "Job is already completed." });
+
+      const quoteId = job.quote_id;
+      const now = new Date().toISOString();
+      const payoutAfter = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(); // 3 hours from now
+
+      // ── Step 2: Get the quote & client from Clean Wizz Supabase ──
+      const db = getStorage();
+      let clientEmail = "";
+      let clientName  = "";
+      let paymentIntentId: string | null = null;
+      let quoteTotal = 0;
+
+      if (quoteId) {
+        const q = await db.getQuote(quoteId);
+        if (q) {
+          paymentIntentId = (q as any).paymentIntentId || null;
+          quoteTotal = q.total;
+          const client = await db.getClient(q.clientId);
+          if (client) {
+            clientEmail = client.email;
+            clientName  = client.name;
+          }
+        }
+      }
+
+      // ── Step 3: Capture the Stripe payment ──
+      let captureResult: any = null;
+      if (stripe && paymentIntentId) {
+        try {
+          captureResult = await stripe.paymentIntents.capture(paymentIntentId);
+          console.log(`[job-complete] Captured PaymentIntent ${paymentIntentId} — $${(captureResult.amount / 100).toFixed(2)} ${captureResult.currency.toUpperCase()}`);
+        } catch (stripeErr: any) {
+          console.error(`[job-complete] Stripe capture error: ${stripeErr.message}`);
+          // Don't block the pipeline — log and continue. The payment can be manually captured.
+        }
+      } else {
+        console.log(`[job-complete] No PaymentIntent to capture for job ${jobId}`);
+      }
+
+      // ── Step 4: Update job status in Harry Spotter Supabase ──
+      await hsSupa
+        .from("jobs")
+        .update({
+          status: "completed",
+          completed_at: now,
+          payout_after: payoutAfter,
+        })
+        .eq("id", jobId);
+
+      // ── Step 5: Check if client is a returning customer ──
+      let isReturning = false;
+      let discountCode = "";
+      let discountExpiry = "";
+
+      if (clientEmail) {
+        // Count how many accepted quotes this client email has
+        const allClients = await db.getClients();
+        const clientsByEmail = allClients.filter(
+          (c: any) => c.email.toLowerCase() === clientEmail.toLowerCase()
+        );
+        const clientIds = clientsByEmail.map((c: any) => c.id);
+
+        // Check quotes for those client IDs
+        const allQuotes = await db.getQuotes();
+        const acceptedQuotes = allQuotes.filter(
+          (q: any) => clientIds.includes(q.clientId) && q.status === "accepted"
+        );
+
+        isReturning = acceptedQuotes.length > 1; // More than just this booking
+
+        // If not returning → generate a one-time discount code (7-day expiry)
+        if (!isReturning) {
+          const code = `COMEBACK${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+          const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+          discountCode = code;
+          discountExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toLocaleDateString("en-CA", {
+            timeZone: "America/Toronto",
+            weekday: "long",
+            month: "long",
+            day: "numeric",
+          });
+
+          // Save the discount code in promo_codes table
+          try {
+            await db.createPromoCode({
+              code,
+              type: "percent",
+              value: 15,
+              active: true,
+              validFrom: now,
+              validTo: expiresAt,
+            });
+            console.log(`[job-complete] Created comeback discount code: ${code} (15% off, expires ${expiresAt})`);
+          } catch (promoErr: any) {
+            console.error(`[job-complete] Failed to create promo code: ${promoErr.message}`);
+          }
+        }
+      }
+
+      // ── Step 6: Send thank-you email ──
+      if (resend && clientEmail) {
+        const thankYouSubject = isReturning
+          ? `✨ Thank you for choosing Harry Spotter again, ${clientName}!`
+          : `✨ Thank you for choosing Harry Spotter, ${clientName}!`;
+
+        let discountHtml = "";
+        if (!isReturning && discountCode) {
+          discountHtml = `
+            <div style="background:linear-gradient(135deg,#2d1854,#5b21b6);border-radius:12px;padding:24px;margin:24px 0;text-align:center;">
+              <p style="color:#ffd03e;font-size:18px;font-weight:700;margin:0 0 8px;">🪄 A Little Magic for Your Next Clean</p>
+              <p style="color:#e9d5ff;font-size:14px;margin:0 0 16px;">Use this exclusive code for <strong>15% off</strong> your next booking:</p>
+              <div style="background:#ffd03e;color:#2d1854;font-size:24px;font-weight:800;letter-spacing:3px;padding:12px 24px;border-radius:8px;display:inline-block;">
+                ${discountCode}
+              </div>
+              <p style="color:#c4b5fd;font-size:12px;margin:12px 0 0;">Valid until ${discountExpiry} — one-time use</p>
+            </div>`;
+        }
+
+        const thankYouHtml = `
+          <div style="font-family:'Segoe UI','Nunito',sans-serif;max-width:600px;margin:0 auto;padding:32px;background:#fdf8f0;">
+            <div style="text-align:center;margin-bottom:24px;">
+              <img src="https://harryspottercleaning.ca/Completed_Trasp_Logo_for_Harry_Spotter.png" alt="Harry Spotter" width="80" style="border-radius:12px;" />
+            </div>
+            <h1 style="color:#6b1629;font-size:22px;text-align:center;margin:0 0 8px;">Thank You${clientName ? `, ${clientName}` : ''}! ✨</h1>
+            <p style="color:#555;font-size:15px;text-align:center;margin:0 0 24px;">
+              Your home has been given the Harry Spotter treatment and we hope it sparkles!
+            </p>
+            <div style="background:#fff;border:1px solid #e5e2db;border-radius:12px;padding:20px;margin-bottom:16px;">
+              <p style="color:#333;font-size:14px;margin:0 0 8px;"><strong>What's next?</strong></p>
+              <ul style="color:#555;font-size:14px;margin:0;padding-left:20px;">
+                <li>Your payment has been processed</li>
+                <li>If you have any concerns about the service, please reach out within 24 hours</li>
+                <li>We'd love to hear your feedback!</li>
+              </ul>
+            </div>
+            ${discountHtml}
+            <div style="text-align:center;margin-top:24px;">
+              <a href="https://harryspottercleaning.ca" style="display:inline-block;background:#a01733;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px;">
+                ${isReturning ? 'Book Your Next Clean' : 'Book Again & Save 15%'}
+              </a>
+            </div>
+            <p style="color:#999;font-size:11px;text-align:center;margin-top:24px;">
+              Harry Spotter Cleaning Co. — Ottawa's Magical Cleaners<br/>
+              magic@harryspottercleaning.ca | 343-321-6242
+            </p>
+          </div>`;
+
+        try {
+          await resend.emails.send({
+            from: process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+            to: clientEmail,
+            subject: thankYouSubject,
+            html: thankYouHtml,
+          });
+          console.log(`[job-complete] Thank-you email sent to ${clientEmail}`);
+        } catch (emailErr: any) {
+          console.error(`[job-complete] Email send error: ${emailErr.message}`);
+        }
+      }
+
+      // ── Step 7: Notify owner ──
+      if (resend) {
+        const contractorLabel = contractorId || "unknown";
+        await resend.emails.send({
+          from: process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+          to: "magic@harryspottercleaning.ca",
+          subject: `✅ Job Completed — ${clientName || 'Client'} (Job ${jobId.slice(0, 8)})`,
+          html: `<div style="font-family:sans-serif;padding:24px;">
+            <h2 style="color:#01696f;">Job Completed</h2>
+            <p><strong>Client:</strong> ${clientName || 'N/A'} (${clientEmail || 'N/A'})</p>
+            <p><strong>Job ID:</strong> ${jobId}</p>
+            <p><strong>Contractor:</strong> ${contractorLabel}</p>
+            <p><strong>Stripe Capture:</strong> ${captureResult ? `✅ $${(captureResult.amount / 100).toFixed(2)} ${captureResult.currency.toUpperCase()}` : '⚠️ No payment to capture'}</p>
+            <p><strong>Returning Client:</strong> ${isReturning ? 'Yes ↩' : `No — sent 15% discount (${discountCode})`}</p>
+            <p><strong>Payout After:</strong> ${new Date(payoutAfter).toLocaleString("en-CA", { timeZone: "America/Toronto" })}</p>
+          </div>`,
+        }).catch(console.error);
+      }
+
+      res.json({
+        success: true,
+        jobId,
+        payoutAfter,
+        captured: !!captureResult,
+        emailSent: !!(resend && clientEmail),
+        discountCode: discountCode || null,
+        isReturning,
+      });
+
+    } catch (err: any) {
+      console.error("[job-complete] Pipeline error:", err?.message || err, err?.stack);
+      res.status(500).json({ error: err.message || "Job completion pipeline failed." });
+    }
+  });
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
