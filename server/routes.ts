@@ -1106,20 +1106,19 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       const { jobId, contractorId } = req.body;
       if (!jobId) return res.status(400).json({ error: "jobId is required." });
 
-      // ── Step 1: Get job details from Harry Spotter Supabase ──
-      if (!hsSupa) return res.status(503).json({ error: "Harry Spotter Supabase not configured." });
-
-      const { data: job, error: jobErr } = await hsSupa
-        .from("jobs")
-        .select("*")
-        .eq("id", jobId)
-        .single();
-      if (jobErr || !job) return res.status(404).json({ error: "Job not found." });
-      if (job.status === "completed") return res.status(400).json({ error: "Job is already completed." });
-
-      const quoteId = job.quote_id;
+      // ── Step 1: Get job details from Harry Spotter Supabase (if available) ──
+      let quoteId: string | null = null;
       const now = new Date().toISOString();
-      const payoutAfter = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(); // 3 hours from now
+      const payoutAfter = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
+
+      if (hsSupa) {
+        const { data: job } = await hsSupa
+          .from("jobs")
+          .select("quote_id")
+          .eq("id", jobId)
+          .single();
+        if (job) quoteId = job.quote_id;
+      }
 
       // ── Step 2: Get the quote & client from Clean Wizz Supabase ──
       const db = getStorage();
@@ -1155,15 +1154,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         console.log(`[job-complete] No PaymentIntent to capture for job ${jobId}`);
       }
 
-      // ── Step 4: Update job status in Harry Spotter Supabase ──
-      await hsSupa
-        .from("jobs")
-        .update({
-          status: "completed",
-          completed_at: now,
-          payout_after: payoutAfter,
-        })
-        .eq("id", jobId);
+      // ── Step 4: (Job status already updated by edge function to payout_pending) ──
 
       // ── Step 5: Check if client is a returning customer ──
       let isReturning = false;
