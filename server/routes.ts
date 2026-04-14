@@ -903,7 +903,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         <ul style="margin:0;padding-left:16px;font-size:12px;color:#64748b;line-height:1.7;">
           <li>Your cleaning specialist provides all cleaning solutions, broom, mop, and vacuum.</li>
           <li>For sanitary reasons, the client must supply their own toilet brush.</li>
-          <li>To cancel or reschedule, please contact us at least 48 hours before your appointment.</li>
+          <li>To cancel or reschedule, please contact us at least 24 hours before your appointment for a full refund.</li>
         </ul>
       </div>
 
@@ -1268,38 +1268,35 @@ function buildBookingHtml(
         <h3>Harry Spotter Cleaning Co. &mdash; Service Agreement</h3>
 
         <div class="terms-section">
-          <h4>Payment Policy</h4>
-          <p>Full payment is required upfront to confirm your booking and reserve your time slot. All transactions are processed securely through Stripe. By completing your booking, you authorize Harry Spotter Cleaning Co. to charge the full quoted amount to your payment method.</p>
-        </div>
-
-        <div class="terms-section">
-          <h4>Cancellation &amp; Refund Policy</h4>
+          <h4>Supplies &amp; Access</h4>
           <ul>
-            <li><strong>48+ hours before appointment:</strong> Full refund issued.</li>
-            <li><strong>24&ndash;48 hours before appointment:</strong> 50% refund issued.</li>
-            <li><strong>Less than 24 hours before appointment:</strong> No refund.</li>
-            <li><strong>Property access denied:</strong> If our team cannot access the property at the scheduled time, no refund will be issued.</li>
+            <li>We provide all cleaning supplies, equipment, and products.</li>
+            <li>Client must provide a toilet brush for sanitary reasons.</li>
+            <li>Client must ensure access to the property at the scheduled time. If we cannot gain entry, the appointment is considered fulfilled.</li>
           </ul>
         </div>
 
         <div class="terms-section">
-          <h4>Service Quality Guarantee</h4>
+          <h4>Payment</h4>
+          <p>Full payment is collected at the time of booking. All transactions are processed securely through Stripe. By booking, you authorize Harry Spotter Cleaning Co. to charge the quoted amount to your payment method.</p>
+        </div>
+
+        <div class="terms-section">
+          <h4>Cancellation Policy</h4>
           <ul>
-            <li>Any concerns about service quality must be reported within <strong>24 hours</strong> of completion.</li>
-            <li>Our first remedy is always a <strong>free reclean</strong>, offered within 24&ndash;48 hours of your report.</li>
-            <li>If you decline the reclean, a <strong>partial refund (10&ndash;50%)</strong> may be offered at our discretion.</li>
-            <li>A full refund is only issued if the service was not performed or was severely inadequate.</li>
+            <li><strong>24+ hours before appointment:</strong> Full refund.</li>
+            <li><strong>Less than 24 hours:</strong> No refund &mdash; a dedicated team and supplies have been reserved for your booking.</li>
           </ul>
         </div>
 
         <div class="terms-section">
-          <h4>General Terms</h4>
-          <ul>
-            <li>Booking a service reserves a dedicated cleaning team and time slot exclusively for you.</li>
-            <li>Refunds are only considered after a reclean has been offered.</li>
-            <li>The Company is not liable for pre-existing damage, fragile items, or unsecured valuables.</li>
-            <li>This agreement is governed by the laws of the Province of Ontario, Canada.</li>
-          </ul>
+          <h4>Satisfaction Guarantee</h4>
+          <p>If you&rsquo;re not satisfied, contact us within 24 hours. We&rsquo;ll arrange a complimentary reclean within 48 hours. If the issue remains unresolved, a partial or full refund may be issued at our discretion.</p>
+        </div>
+
+        <div class="terms-section">
+          <h4>Liability</h4>
+          <p>Harry Spotter Cleaning Co. is not responsible for pre-existing damage, wear and tear, fragile or unsecured items, or damage caused by concealed hazards. Please secure valuables and fragile items before your appointment. This agreement is governed by the laws of the Province of Ontario, Canada.</p>
         </div>
       </div>
 
