@@ -45,17 +45,17 @@ const SERVICE_OPTIONS = [
   {
     value: "standard",
     label: "Standard Clean",
-    description: "Up to 3 hrs — bathrooms, kitchen, living areas, bedrooms, stairs",
+    description: "Flat-rate — bathrooms, kitchen, living areas, bedrooms, stairs",
   },
   {
     value: "deep",
     label: "Deep Clean",
-    description: "Up to 6 hrs — everything in Standard + inside fridge, cabinets, baseboards, windows, grout",
+    description: "Flat-rate — everything in Standard + inside fridge, cabinets, baseboards, windows, grout",
   },
   {
     value: "moveout",
     label: "Move-In / Move-Out",
-    description: "Up to 8 hrs — everything in Deep + behind fridge/stove, grout scrubbing, all interior windows",
+    description: "Flat-rate — everything in Deep + behind fridge/stove, grout scrubbing, all interior windows",
   },
 ] as const;
 
