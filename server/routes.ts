@@ -159,8 +159,8 @@ const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KE
 
 // ── Pricing Engine ────────────────────────────────────────────────────────────
 // ── Transparent Pricing Constants ─────────────────────────────────────────────
-const BASE_FEE = 300;              // minimum / base fee ($300 covers 0–1000 sq ft)
-const SQFT_RATE = 0.26;            // per-square-foot rate
+const BASE_FEE = 139;              // base fee ($139 flat — admin, insurance, supplies, travel buffer)
+const SQFT_RATE = 0.25;            // per-square-foot rate
 const OVEN_PRICE = 100;            // in-oven cleaning add-on
 const LAUNDRY_PRICE = 100;         // laundry wash & fold add-on
 const HST_RATE = 0.13;             // Ontario HST
@@ -171,7 +171,7 @@ const LAUNDRY_NOTICE = "Client is responsible for sorting special care items (de
 function buildLineItems(form: any, s: any) {
   const items: { label: string; quantity: number; unitPrice: number; lineTotal: number; category: string }[] = [];
 
-  // 1. Base Fee — always $300
+  // 1. Base Fee — always $139
   items.push({ label: "Base fee", quantity: 1, unitPrice: BASE_FEE, lineTotal: BASE_FEE, category: "base" });
 
   // 2. Square footage

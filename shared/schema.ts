@@ -75,7 +75,7 @@ export type PromoCode = typeof promoCodes.$inferSelect;
 // ── settings ─────────────────────────────────────────────────────────────────
 export const settings = sqliteTable("settings", {
   id: text("id").primaryKey().default("default"),
-  pricePerSqft: real("price_per_sqft").notNull().default(0.30),
+  pricePerSqft: real("price_per_sqft").notNull().default(0.25),
   baseRate: real("base_rate").notNull().default(100),
   perBedroom: real("per_bedroom").notNull().default(15),
   perBathroom: real("per_bathroom").notNull().default(20),

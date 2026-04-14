@@ -97,7 +97,7 @@ export default function SettingsPage() {
     resolver: zodResolver(pricingSchema),
     defaultValues: {
       baseRate: 80,
-      pricePerSqft: 0.30,
+      pricePerSqft: 0.25,
       perBedroom: 15,
       perBathroom: 20,
       fridgePrice: 25,
