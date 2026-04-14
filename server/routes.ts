@@ -1239,8 +1239,15 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
               <ul style="color:#555;font-size:14px;margin:0;padding-left:20px;">
                 <li>Your payment has been processed</li>
                 <li>If you have any concerns about the service, please reach out within 24 hours</li>
-                <li>We'd love to hear your feedback!</li>
               </ul>
+            </div>
+            <div style="background:linear-gradient(135deg,#fef9e7,#fff8e1);border:2px solid #ffd03e;border-radius:12px;padding:24px;margin:16px 0;text-align:center;">
+              <p style="font-size:28px;margin:0 0 8px;">⭐⭐⭐⭐⭐</p>
+              <p style="color:#6b1629;font-size:16px;font-weight:700;margin:0 0 8px;">Loved your clean? Leave us a review!</p>
+              <p style="color:#555;font-size:13px;margin:0 0 16px;">Your feedback helps other Ottawa homeowners discover our magical cleaning service. It only takes 30 seconds!</p>
+              <a href="${process.env.GOOGLE_REVIEW_URL || 'https://g.page/r/harryspottercleaning/review'}" style="display:inline-block;background:#ffd03e;color:#6b1629;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:800;font-size:14px;">
+                ⭐ Leave a 5-Star Review on Google
+              </a>
             </div>
             ${discountHtml}
             <div style="text-align:center;margin-top:24px;">
