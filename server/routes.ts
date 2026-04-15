@@ -1095,6 +1095,91 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   });
 
   // ══════════════════════════════════════════════════════════════════════════════
+  // Stripe Connect — Contractor payout onboarding
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  // POST /api/stripe/connect/create — Create a Stripe Connect account for a contractor
+  app.post("/api/stripe/connect/create", async (req, res) => {
+    try {
+      if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
+      const { contractorId, email, fullName } = req.body;
+      if (!contractorId || !email) return res.status(400).json({ error: "contractorId and email required" });
+
+      // Create a Stripe Connect Express account
+      const account = await stripe.accounts.create({
+        type: "express",
+        country: "CA",
+        email,
+        business_type: "individual",
+        individual: {
+          first_name: fullName?.split(" ")[0] || "",
+          last_name: fullName?.split(" ").slice(1).join(" ") || "",
+          email,
+        },
+        capabilities: {
+          card_payments: { requested: false },
+          transfers: { requested: true },
+        },
+        business_profile: {
+          mcc: "7349", // cleaning services
+          product_description: "Residential cleaning services for Harry Spotter Cleaning Co.",
+        },
+        metadata: { contractorId },
+      });
+
+      console.log(`[stripe-connect] Created account ${account.id} for contractor ${contractorId}`);
+      res.json({ accountId: account.id });
+    } catch (err: any) {
+      console.error("[stripe-connect] Create error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/stripe/connect/onboard-link — Get a Stripe onboarding link
+  app.post("/api/stripe/connect/onboard-link", async (req, res) => {
+    try {
+      if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
+      const { accountId, contractorId } = req.body;
+      if (!accountId) return res.status(400).json({ error: "accountId required" });
+
+      const returnUrl = `https://harryspottercleaning.ca/contractor?stripe=complete&cid=${contractorId || ""}`;
+      const refreshUrl = `https://harryspottercleaning.ca/contractor?stripe=refresh&cid=${contractorId || ""}`;
+
+      const link = await stripe.accountLinks.create({
+        account: accountId,
+        refresh_url: refreshUrl,
+        return_url: returnUrl,
+        type: "account_onboarding",
+      });
+
+      res.json({ url: link.url });
+    } catch (err: any) {
+      console.error("[stripe-connect] Onboard link error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/stripe/connect/status/:accountId — Check onboarding status
+  app.get("/api/stripe/connect/status/:accountId", async (req, res) => {
+    try {
+      if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
+      const account = await stripe.accounts.retrieve(req.params.accountId);
+
+      res.json({
+        accountId: account.id,
+        chargesEnabled: account.charges_enabled,
+        payoutsEnabled: account.payouts_enabled,
+        detailsSubmitted: account.details_submitted,
+        requirementsDue: account.requirements?.currently_due || [],
+        onboardingComplete: account.details_submitted && account.payouts_enabled,
+      });
+    } catch (err: any) {
+      console.error("[stripe-connect] Status error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
   // POST /api/job/complete — Job-complete pipeline
   //   1. Capture Stripe auth hold (manual PaymentIntent)
   //   2. Update job status in Harry Spotter Supabase
@@ -1139,8 +1224,42 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         }
       }
 
-      // ── Step 3: Payment already captured at booking (automatic capture) ──
-      console.log(`[job-complete] Payment was captured at booking time. No capture needed.`);
+      // ── Step 3: Payment already captured at booking. Transfer payout to contractor. ──
+      let transferResult: any = null;
+      if (stripe && contractorId && hsSupa) {
+        try {
+          // Look up contractor's Stripe Connect account
+          const { data: ctr } = await hsSupa
+            .from("contractor_applications")
+            .select("stripe_account_id, pay_amount")
+            .eq("id", contractorId)
+            .single();
+
+          if (ctr?.stripe_account_id) {
+            // Determine payout amount from the job's pay_amount (stored in HS Supabase)
+            let payAmount = 0;
+            if (hsSupa) {
+              const { data: jobData } = await hsSupa.from("jobs").select("pay_amount").eq("id", jobId).single();
+              if (jobData?.pay_amount) payAmount = Number(jobData.pay_amount);
+            }
+
+            if (payAmount > 0) {
+              transferResult = await stripe.transfers.create({
+                amount: Math.round(payAmount * 100), // cents
+                currency: "cad",
+                destination: ctr.stripe_account_id,
+                description: `Payout for job ${jobId.slice(0, 8)}`,
+                metadata: { jobId, contractorId },
+              });
+              console.log(`[job-complete] Transferred $${payAmount.toFixed(2)} to ${ctr.stripe_account_id}`);
+            }
+          } else {
+            console.log(`[job-complete] Contractor ${contractorId} has no Stripe Connect account. Manual payout needed.`);
+          }
+        } catch (transferErr: any) {
+          console.error(`[job-complete] Transfer error: ${transferErr.message}`);
+        }
+      }
 
       // ── Step 5: Check if client is a returning customer ──
       let isReturning = false;
@@ -1273,6 +1392,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
             <p><strong>Job ID:</strong> ${jobId}</p>
             <p><strong>Contractor:</strong> ${contractorLabel}</p>
             <p><strong>Payment:</strong> ✅ Captured at booking</p>
+            <p><strong>Contractor Payout:</strong> ${transferResult ? `✅ $${(transferResult.amount / 100).toFixed(2)} transferred via Stripe Connect` : '⚠️ No Stripe Connect — manual payout needed'}</p>
             <p><strong>Returning Client:</strong> ${isReturning ? 'Yes ↩' : `No — sent 15% discount (${discountCode})`}</p>
             <p><strong>Payout:</strong> Immediate</p>
           </div>`,
