@@ -723,7 +723,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       const intent = await stripe.paymentIntents.create({
         amount:   amountCents,
         currency: "cad",
-        capture_method: "manual",  // auth hold — capture after job completion
+        capture_method: "automatic",  // capture payment immediately at booking
         metadata: { quoteId: q.id },
         description: `Harry Spotter — Quote ${q.id.slice(0, 8)}`,
       });
@@ -1109,7 +1109,6 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       // ── Step 1: Get job details from Harry Spotter Supabase (if available) ──
       let quoteId: string | null = null;
       const now = new Date().toISOString();
-      const payoutAfter = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
 
       if (hsSupa) {
         const { data: job } = await hsSupa
@@ -1140,21 +1139,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         }
       }
 
-      // ── Step 3: Capture the Stripe payment ──
-      let captureResult: any = null;
-      if (stripe && paymentIntentId) {
-        try {
-          captureResult = await stripe.paymentIntents.capture(paymentIntentId);
-          console.log(`[job-complete] Captured PaymentIntent ${paymentIntentId} — $${(captureResult.amount / 100).toFixed(2)} ${captureResult.currency.toUpperCase()}`);
-        } catch (stripeErr: any) {
-          console.error(`[job-complete] Stripe capture error: ${stripeErr.message}`);
-          // Don't block the pipeline — log and continue. The payment can be manually captured.
-        }
-      } else {
-        console.log(`[job-complete] No PaymentIntent to capture for job ${jobId}`);
-      }
-
-      // ── Step 4: (Job status already updated by edge function to payout_pending) ──
+      // ── Step 3: Payment already captured at booking (automatic capture) ──
+      console.log(`[job-complete] Payment was captured at booking time. No capture needed.`);
 
       // ── Step 5: Check if client is a returning customer ──
       let isReturning = false;
@@ -1286,9 +1272,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
             <p><strong>Client:</strong> ${clientName || 'N/A'} (${clientEmail || 'N/A'})</p>
             <p><strong>Job ID:</strong> ${jobId}</p>
             <p><strong>Contractor:</strong> ${contractorLabel}</p>
-            <p><strong>Stripe Capture:</strong> ${captureResult ? `✅ $${(captureResult.amount / 100).toFixed(2)} ${captureResult.currency.toUpperCase()}` : '⚠️ No payment to capture'}</p>
+            <p><strong>Payment:</strong> ✅ Captured at booking</p>
             <p><strong>Returning Client:</strong> ${isReturning ? 'Yes ↩' : `No — sent 15% discount (${discountCode})`}</p>
-            <p><strong>Payout After:</strong> ${new Date(payoutAfter).toLocaleString("en-CA", { timeZone: "America/Toronto" })}</p>
+            <p><strong>Payout:</strong> Immediate</p>
           </div>`,
         }).catch(console.error);
       }
@@ -1296,8 +1282,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       res.json({
         success: true,
         jobId,
-        payoutAfter,
-        captured: !!captureResult,
+        captured: true,
         emailSent: !!(resend && clientEmail),
         discountCode: discountCode || null,
         isReturning,
