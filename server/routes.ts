@@ -1498,30 +1498,43 @@ function buildBookingHtml(
     .step-num{background:#a01733;color:#fff;width:20px;height:20px;border-radius:50%;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
     .step-title{font-size:13px;font-weight:700;color:#1a0a0e;letter-spacing:.01em}
     /* Mini calendar */
-    .cal-wrap{margin-bottom:16px}
-    .cal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
-    .cal-header .cal-month{font-size:15px;font-weight:700;color:#1a0a0e}
-    .cal-header button{background:none;border:1.5px solid #e5e7eb;border-radius:6px;width:30px;height:30px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;color:#7a7974;transition:border-color .15s}
-    .cal-header button:hover{border-color:#a01733;color:#a01733}
-    .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;text-align:center}
-    .cal-dow{font-size:11px;font-weight:600;color:#bab9b4;text-transform:uppercase;padding:4px 0}
-    .cal-day{font-size:13px;padding:8px 2px;border-radius:8px;cursor:pointer;transition:all .15s;border:1.5px solid transparent;font-weight:500;color:#1a0a0e}
-    .cal-day:hover:not(.cal-empty):not(.cal-no-slots){background:#fdf2f4;border-color:#e8b4be}
+    .cal-wrap{margin-bottom:16px;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden}
+    .cal-header{display:flex;align-items:center;justify-content:space-between;background:#8B0000;padding:10px 12px}
+    .cal-header .cal-month{font-size:15px;font-weight:700;color:#fff}
+    .cal-header button{background:none;border:none;width:30px;height:30px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:20px;color:rgba(255,255,255,.85);transition:color .15s}
+    .cal-header button:hover{color:#f5d878}
+    .cal-dow-row{display:grid;grid-template-columns:repeat(7,1fr);text-align:center;background:#f7f7f6;border-bottom:1px solid #e5e7eb}
+    .cal-dow{font-size:10px;font-weight:700;color:#999;text-transform:uppercase;padding:8px 0;letter-spacing:.04em}
+    .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);text-align:center;padding:8px 4px}
+    .cal-day{font-size:13px;padding:8px 2px 14px;border-radius:8px;cursor:default;transition:all .15s;border:1.5px solid transparent;font-weight:500;color:#1a0a0e;position:relative}
+    .cal-day.cal-clickable{cursor:pointer}
+    .cal-day.cal-clickable:hover{background:#fdf2f4;border-color:#e8b4be}
     .cal-day.cal-empty{cursor:default}
-    .cal-day.cal-no-slots{color:#d5d4d0;cursor:default;text-decoration:line-through}
-    .cal-day.cal-has-slots{background:#fff8e6;border-color:#f5d878;font-weight:700}
-    .cal-day.cal-selected{background:#a01733;color:#fff;border-color:#a01733;font-weight:700}
-    .cal-day.cal-today{box-shadow:inset 0 -2px 0 #f5d878}
+    .cal-day.cal-no-slots{color:#ccc}
+    .cal-day.cal-has-slots{font-weight:600}
+    .cal-day.cal-selected{background:#8B0000;color:#fff;border-color:#8B0000;font-weight:700;border-radius:8px}
+    .cal-day.cal-today:not(.cal-selected){font-weight:800;color:#8B0000}
+    .cal-dot{position:absolute;bottom:4px;left:50%;transform:translateX(-50%);width:6px;height:6px;border-radius:50%}
+    .cal-dot.dot-available{background:#DAA520}
+    .cal-dot.dot-none{background:#ccc}
+    .cal-legend{display:flex;align-items:center;justify-content:center;gap:16px;padding:8px 0 10px;font-size:11px;color:#888;border-top:1px solid #f0ece8}
+    .cal-legend-item{display:flex;align-items:center;gap:5px}
+    .cal-legend-dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+    .cal-legend-dot.dot-gold{background:#DAA520}
+    .cal-legend-dot.dot-grey{background:#ccc}
     /* Slot grid */
     .slots-wrap{margin-top:12px}
-    .slots-date-label{font-size:14px;font-weight:700;color:#1a0a0e;margin-bottom:10px}
-    .slots-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}
-    .slot-btn{padding:10px 8px;border:1.5px solid #e5e7eb;border-radius:8px;background:#fff;font-size:13px;font-weight:600;color:#1a0a0e;cursor:pointer;transition:all .15s;text-align:center;font-family:inherit}
-    .slot-btn:hover:not(.slot-disabled){border-color:#a01733;background:#fdf2f4}
-    .slot-btn.slot-selected{background:#a01733;color:#f5d878;border-color:#a01733}
-    .slot-btn.slot-disabled{background:#f5f5f4;color:#c5c4c0;cursor:not-allowed;border-color:#eeeceb}
-    .slot-btn.slot-disabled .slot-booked-label{display:block;font-size:10px;color:#bab9b4;margin-top:2px;font-weight:400}
+    .slots-date-label{font-size:14px;font-weight:700;color:#1a0a0e;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+    .slots-date-label::before{content:'\\1F4C5'}
+    .slots-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
+    .slot-btn{padding:12px 8px;border:1.5px solid #e5e7eb;border-radius:10px;background:#fff;font-size:13px;font-weight:600;color:#1a0a0e;cursor:pointer;transition:all .15s;text-align:center;font-family:inherit;line-height:1.3}
+    .slot-btn:hover:not(.slot-disabled){border-color:#8B0000;background:#fdf2f4}
+    .slot-btn.slot-selected{background:#8B0000;color:#f5d878;border-color:#8B0000}
+    .slot-btn.slot-disabled{background:#f9f9f8;color:#bbb;cursor:not-allowed;border-color:#eee}
+    .slot-btn.slot-disabled .slot-time-text{text-decoration:line-through;color:#ccc}
+    .slot-btn.slot-disabled .slot-booked-label{display:block;font-size:10px;color:#bbb;margin-top:3px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
     .slot-btn:not(.slot-disabled) .slot-booked-label{display:none}
+    .slot-btn:not(.slot-disabled) .slot-time-text{text-decoration:none}
     .slots-empty{font-size:13px;color:#bab9b4;text-align:center;padding:16px 0}
     .divider{border:none;border-top:1px solid #f0ece8;margin:24px 0}
     /* Terms */
@@ -1766,13 +1779,20 @@ function buildBookingHtml(
         var startDow = first.getDay(); // 0=Sun
         var daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
 
+        // Crimson header bar
         var h = '<div class="cal-header">';
         h += '<button type="button" id="calPrev">&#8249;</button>';
         h += '<span class="cal-month">' + monthNames[viewMonth] + ' ' + viewYear + '</span>';
         h += '<button type="button" id="calNext">&#8250;</button>';
         h += '</div>';
+
+        // Day-of-week row
+        h += '<div class="cal-dow-row">';
+        ['SUN','MON','TUE','WED','THU','FRI','SAT'].forEach(function(d){ h += '<div class="cal-dow">' + d + '</div>'; });
+        h += '</div>';
+
+        // Date grid
         h += '<div class="cal-grid">';
-        ['Su','Mo','Tu','We','Th','Fr','Sa'].forEach(function(d){ h += '<div class="cal-dow">' + d + '</div>'; });
 
         // Empty cells before first day
         for (var e = 0; e < startDow; e++) h += '<div class="cal-day cal-empty"></div>';
@@ -1784,19 +1804,35 @@ function buildBookingHtml(
           var hasAnySlot = daySlots.length > 0;
 
           var cls = 'cal-day';
+          var isClickable = hasAnySlot;
+          if (isClickable) cls += ' cal-clickable';
           if (ds === todayStr) cls += ' cal-today';
           if (ds === selectedDate) cls += ' cal-selected';
           else if (hasAvailable) cls += ' cal-has-slots';
           else if (hasAnySlot && !hasAvailable) cls += ' cal-no-slots';
           else if (!hasAnySlot) cls += ' cal-empty';
 
-          if (hasAnySlot) {
-            h += '<div class="' + cls + '" data-date="' + ds + '">' + d + '</div>';
-          } else {
-            h += '<div class="' + cls + '">' + d + '</div>';
+          h += '<div class="' + cls + '"';
+          if (hasAnySlot) h += ' data-date="' + ds + '"';
+          h += '>' + d;
+
+          // Dot indicator beneath the number
+          if (hasAvailable) {
+            h += '<span class="cal-dot dot-available"></span>';
+          } else if (hasAnySlot && !hasAvailable) {
+            h += '<span class="cal-dot dot-none"></span>';
           }
+
+          h += '</div>';
         }
         h += '</div>';
+
+        // Legend
+        h += '<div class="cal-legend">';
+        h += '<div class="cal-legend-item"><span class="cal-legend-dot dot-gold"></span> Available</div>';
+        h += '<div class="cal-legend-item"><span class="cal-legend-dot dot-grey"></span> No slots</div>';
+        h += '</div>';
+
         calWrap.innerHTML = h;
 
         // Attach events
@@ -1827,10 +1863,12 @@ function buildBookingHtml(
           return;
         }
 
-        // Format date for label
+        // Format date for label (e.g., "Thursday, April 16")
         var dp = selectedDate.split('-');
         var dateObj = new Date(parseInt(dp[0]), parseInt(dp[1])-1, parseInt(dp[2]));
-        var dateLabel = dateObj.toLocaleDateString('en-CA', { weekday: 'long', month: 'long', day: 'numeric' });
+        var dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+        var monthNamesShort = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+        var dateLabel = dayNames[dateObj.getDay()] + ', ' + monthNamesShort[dateObj.getMonth()] + ' ' + dateObj.getDate();
 
         var h = '<div class="slots-date-label">' + dateLabel + '</div><div class="slots-grid">';
         daySlots.forEach(function(s) {
@@ -1846,8 +1884,8 @@ function buildBookingHtml(
 
           h += '<button type="button" class="' + cls + '"';
           if (!isDisabled) h += ' data-start="' + s.start + '" data-end="' + s.end + '"';
-          h += '>' + timeLabel;
-          if (isDisabled) h += '<span class="slot-booked-label">Booked</span>';
+          h += '><span class="slot-time-text">' + timeLabel + '</span>';
+          if (isDisabled) h += '<span class="slot-booked-label">BOOKED</span>';
           h += '</button>';
         });
         h += '</div>';
