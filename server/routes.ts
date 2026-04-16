@@ -5,7 +5,7 @@ import fs from "fs";
 import { getStorage } from "./storage";
 import { Resend } from "resend";
 import { quoteFormSchema } from "@shared/schema";
-import { getAvailableSlots, bookSlot } from "./calendar";
+import { getAvailableSlots, bookSlot, type SlotInfo } from "./calendar";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
@@ -1459,14 +1459,12 @@ function bookingDoneHtml(message: string) {
 function buildBookingHtml(
   quote: any,
   clientName: string,
-  slots: { start: string; end: string; label: string }[],
+  slots: SlotInfo[],
   baseUrl: string
 ) {
   const stripePublishableKey = process.env.STRIPE_PUBLISHABLE_KEY || "";
   const logoUrl = `${baseUrl}/api/assets/logo`;
-  const slotOptions = slots.map(s =>
-    `<option value="${s.start}|${s.end}">${s.label}</option>`
-  ).join("\n");
+  const slotsJson = JSON.stringify(slots);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -1499,8 +1497,32 @@ function buildBookingHtml(
     .step-label{display:flex;align-items:center;gap:8px;margin-bottom:8px}
     .step-num{background:#a01733;color:#fff;width:20px;height:20px;border-radius:50%;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
     .step-title{font-size:13px;font-weight:700;color:#1a0a0e;letter-spacing:.01em}
-    select{width:100%;padding:12px 14px;border:1.5px solid #e5e7eb;border-radius:8px;font-size:15px;color:#1a0a0e;background:#fff;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%237a7974' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;cursor:pointer;font-family:inherit}
-    select:focus{outline:none;border-color:#a01733;box-shadow:0 0 0 3px rgba(160,23,51,.1)}
+    /* Mini calendar */
+    .cal-wrap{margin-bottom:16px}
+    .cal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+    .cal-header .cal-month{font-size:15px;font-weight:700;color:#1a0a0e}
+    .cal-header button{background:none;border:1.5px solid #e5e7eb;border-radius:6px;width:30px;height:30px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;color:#7a7974;transition:border-color .15s}
+    .cal-header button:hover{border-color:#a01733;color:#a01733}
+    .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;text-align:center}
+    .cal-dow{font-size:11px;font-weight:600;color:#bab9b4;text-transform:uppercase;padding:4px 0}
+    .cal-day{font-size:13px;padding:8px 2px;border-radius:8px;cursor:pointer;transition:all .15s;border:1.5px solid transparent;font-weight:500;color:#1a0a0e}
+    .cal-day:hover:not(.cal-empty):not(.cal-no-slots){background:#fdf2f4;border-color:#e8b4be}
+    .cal-day.cal-empty{cursor:default}
+    .cal-day.cal-no-slots{color:#d5d4d0;cursor:default;text-decoration:line-through}
+    .cal-day.cal-has-slots{background:#fff8e6;border-color:#f5d878;font-weight:700}
+    .cal-day.cal-selected{background:#a01733;color:#fff;border-color:#a01733;font-weight:700}
+    .cal-day.cal-today{box-shadow:inset 0 -2px 0 #f5d878}
+    /* Slot grid */
+    .slots-wrap{margin-top:12px}
+    .slots-date-label{font-size:14px;font-weight:700;color:#1a0a0e;margin-bottom:10px}
+    .slots-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}
+    .slot-btn{padding:10px 8px;border:1.5px solid #e5e7eb;border-radius:8px;background:#fff;font-size:13px;font-weight:600;color:#1a0a0e;cursor:pointer;transition:all .15s;text-align:center;font-family:inherit}
+    .slot-btn:hover:not(.slot-disabled){border-color:#a01733;background:#fdf2f4}
+    .slot-btn.slot-selected{background:#a01733;color:#f5d878;border-color:#a01733}
+    .slot-btn.slot-disabled{background:#f5f5f4;color:#c5c4c0;cursor:not-allowed;border-color:#eeeceb}
+    .slot-btn.slot-disabled .slot-booked-label{display:block;font-size:10px;color:#bab9b4;margin-top:2px;font-weight:400}
+    .slot-btn:not(.slot-disabled) .slot-booked-label{display:none}
+    .slots-empty{font-size:13px;color:#bab9b4;text-align:center;padding:16px 0}
     .divider{border:none;border-top:1px solid #f0ece8;margin:24px 0}
     /* Terms */
     .terms-box{background:#fafaf8;border:1.5px solid #e8e4e0;border-radius:10px;padding:16px 18px;margin-bottom:14px;max-height:210px;overflow-y:auto}
@@ -1563,18 +1585,19 @@ function buildBookingHtml(
         <strong>$${quote.total.toFixed(2)} CAD</strong>
       </div>
 
-      ${slots.length === 0
+      ${slots.filter(s => s.status === "available").length === 0
         ? `<p style="color:#c0392b;text-align:center;padding:20px 0;">No available slots right now. Please call us to book directly at <a href="tel:3433216242" style="color:#a01733">343-321-6242</a>.</p>`
         : `
       <!-- Step 1: Time Slot -->
       <div class="step-label">
         <div class="step-num">1</div>
-        <div class="step-title">Select a time slot</div>
+        <div class="step-title">Select a date &amp; time</div>
       </div>
-      <select id="slot">
-        <option value="">— Pick a date and time —</option>
-        ${slotOptions}
-      </select>
+      <div class="cal-wrap" id="calWrap"></div>
+      <div class="slots-wrap" id="slotsWrap">
+        <p class="slots-empty">Pick a date above to see available times</p>
+      </div>
+      <input type="hidden" id="slot" value="">
 
 
       <hr class="divider">
@@ -1662,19 +1685,22 @@ function buildBookingHtml(
       var PUBLISHABLE_KEY = '${stripePublishableKey}';
       var QUOTE_ID        = '${quote.id}';
       var BASE_URL        = '${baseUrl}';
+      var ALL_SLOTS       = ${slotsJson};
 
-      var select       = document.getElementById('slot');
+      var slotInput    = document.getElementById('slot');
       var termsChk     = document.getElementById('termsChk');
       var payBtn       = document.getElementById('payBtn');
       var msgEl        = document.getElementById('msg');
       var cardErrors   = document.getElementById('card-errors');
       var totalDisplay = document.getElementById('totalDisplay');
+      var calWrap      = document.getElementById('calWrap');
+      var slotsWrap    = document.getElementById('slotsWrap');
       var baseTotal    = ${quote.total.toFixed(2)};
 
-      if (!select || !payBtn) return;
+      if (!payBtn) return;
 
       if (!PUBLISHABLE_KEY) {
-        payBtn.textContent = 'Payment setup in progress \u2014 please try again shortly';
+        payBtn.textContent = 'Payment setup in progress \\u2014 please try again shortly';
         payBtn.disabled = true;
         if (cardErrors) cardErrors.textContent = 'Payment is being configured. If this persists, please call us at 343-321-6242.';
         return;
@@ -1696,6 +1722,8 @@ function buildBookingHtml(
       cardElement.mount('#card-element');
 
       var cardComplete = false;
+      var selectedDate = '';
+      var selectedSlot = null; // { start, end }
 
       cardElement.on('change', function(e) {
         cardComplete = e.complete;
@@ -1704,65 +1732,182 @@ function buildBookingHtml(
       });
 
       function updatePayBtn() {
-        payBtn.disabled = !(select && select.value && termsChk && termsChk.checked && cardComplete);
+        payBtn.disabled = !(selectedSlot && termsChk && termsChk.checked && cardComplete);
       }
 
-      function onSlotChange() {
-        updatePayBtn();
-        if (!select.value) {
-          if (totalDisplay) totalDisplay.textContent = '';
-          payBtn.textContent = '\u2728 Confirm, Agree & Pay \u2014 $' + baseTotal.toFixed(2) + ' CAD';
+      if (termsChk) termsChk.addEventListener('change', updatePayBtn);
+
+      // ── Group slots by date ────────────────────────────────────────────────
+      var slotsByDate = {};
+      ALL_SLOTS.forEach(function(s) {
+        if (!slotsByDate[s.date]) slotsByDate[s.date] = [];
+        slotsByDate[s.date].push(s);
+      });
+
+      // ── Mini calendar rendering ────────────────────────────────────────────
+      var viewYear, viewMonth;
+      (function initCalView() {
+        // Start calendar on the first date that has slots
+        var dates = Object.keys(slotsByDate).sort();
+        if (dates.length) {
+          var p = dates[0].split('-');
+          viewYear = parseInt(p[0]); viewMonth = parseInt(p[1]) - 1;
+        } else {
+          var n = new Date(); viewYear = n.getFullYear(); viewMonth = n.getMonth();
+        }
+      })();
+
+      function renderCalendar() {
+        var today = new Date();
+        var todayStr = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-' + String(today.getDate()).padStart(2,'0');
+        var monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
+        var first = new Date(viewYear, viewMonth, 1);
+        var startDow = first.getDay(); // 0=Sun
+        var daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+
+        var h = '<div class="cal-header">';
+        h += '<button type="button" id="calPrev">&#8249;</button>';
+        h += '<span class="cal-month">' + monthNames[viewMonth] + ' ' + viewYear + '</span>';
+        h += '<button type="button" id="calNext">&#8250;</button>';
+        h += '</div>';
+        h += '<div class="cal-grid">';
+        ['Su','Mo','Tu','We','Th','Fr','Sa'].forEach(function(d){ h += '<div class="cal-dow">' + d + '</div>'; });
+
+        // Empty cells before first day
+        for (var e = 0; e < startDow; e++) h += '<div class="cal-day cal-empty"></div>';
+
+        for (var d = 1; d <= daysInMonth; d++) {
+          var ds = viewYear + '-' + String(viewMonth+1).padStart(2,'0') + '-' + String(d).padStart(2,'0');
+          var daySlots = slotsByDate[ds] || [];
+          var hasAvailable = daySlots.some(function(s){ return s.status === 'available'; });
+          var hasAnySlot = daySlots.length > 0;
+
+          var cls = 'cal-day';
+          if (ds === todayStr) cls += ' cal-today';
+          if (ds === selectedDate) cls += ' cal-selected';
+          else if (hasAvailable) cls += ' cal-has-slots';
+          else if (hasAnySlot && !hasAvailable) cls += ' cal-no-slots';
+          else if (!hasAnySlot) cls += ' cal-empty';
+
+          if (hasAnySlot) {
+            h += '<div class="' + cls + '" data-date="' + ds + '">' + d + '</div>';
+          } else {
+            h += '<div class="' + cls + '">' + d + '</div>';
+          }
+        }
+        h += '</div>';
+        calWrap.innerHTML = h;
+
+        // Attach events
+        document.getElementById('calPrev').addEventListener('click', function(){ viewMonth--; if(viewMonth<0){viewMonth=11;viewYear--;} renderCalendar(); });
+        document.getElementById('calNext').addEventListener('click', function(){ viewMonth++; if(viewMonth>11){viewMonth=0;viewYear++;} renderCalendar(); });
+
+        calWrap.querySelectorAll('.cal-day[data-date]').forEach(function(el) {
+          el.addEventListener('click', function() {
+            selectedDate = el.getAttribute('data-date');
+            selectedSlot = null;
+            slotInput.value = '';
+            renderCalendar();
+            renderSlots();
+            updatePayBtn();
+          });
+        });
+      }
+
+      // ── Slot grid rendering ────────────────────────────────────────────────
+      function renderSlots() {
+        if (!selectedDate) {
+          slotsWrap.innerHTML = '<p class="slots-empty">Pick a date above to see available times</p>';
           return;
         }
-        payBtn.textContent = '\u2728 Confirm, Agree & Pay \u2014 $' + baseTotal.toFixed(2) + ' CAD';
-        if (totalDisplay) totalDisplay.textContent = '';
+        var daySlots = slotsByDate[selectedDate] || [];
+        if (!daySlots.length) {
+          slotsWrap.innerHTML = '<p class="slots-empty">No slots on this date</p>';
+          return;
+        }
+
+        // Format date for label
+        var dp = selectedDate.split('-');
+        var dateObj = new Date(parseInt(dp[0]), parseInt(dp[1])-1, parseInt(dp[2]));
+        var dateLabel = dateObj.toLocaleDateString('en-CA', { weekday: 'long', month: 'long', day: 'numeric' });
+
+        var h = '<div class="slots-date-label">' + dateLabel + '</div><div class="slots-grid">';
+        daySlots.forEach(function(s) {
+          var isDisabled = s.status !== 'available';
+          var isSelected = selectedSlot && selectedSlot.start === s.start;
+          var cls = 'slot-btn';
+          if (isDisabled) cls += ' slot-disabled';
+          if (isSelected) cls += ' slot-selected';
+
+          // Format time label (just the time part)
+          var startDate = new Date(s.start);
+          var timeLabel = startDate.toLocaleTimeString('en-CA', { timeZone: 'America/Toronto', hour: 'numeric', minute: '2-digit', hour12: true });
+
+          h += '<button type="button" class="' + cls + '"';
+          if (!isDisabled) h += ' data-start="' + s.start + '" data-end="' + s.end + '"';
+          h += '>' + timeLabel;
+          if (isDisabled) h += '<span class="slot-booked-label">Booked</span>';
+          h += '</button>';
+        });
+        h += '</div>';
+        slotsWrap.innerHTML = h;
+
+        // Attach slot click events
+        slotsWrap.querySelectorAll('.slot-btn:not(.slot-disabled)').forEach(function(btn) {
+          btn.addEventListener('click', function() {
+            selectedSlot = { start: btn.getAttribute('data-start'), end: btn.getAttribute('data-end') };
+            slotInput.value = selectedSlot.start + '|' + selectedSlot.end;
+            renderSlots();
+            updatePayBtn();
+            payBtn.textContent = '\\u2728 Confirm, Agree & Pay \\u2014 $' + baseTotal.toFixed(2) + ' CAD';
+          });
+        });
       }
 
-      select.addEventListener('change', onSlotChange);
-      select.addEventListener('input', onSlotChange);
-      termsChk.addEventListener('change', updatePayBtn);
+      // Initial render
+      renderCalendar();
 
+      // ── Payment flow ───────────────────────────────────────────────────────
       payBtn.addEventListener('click', async function() {
-        if (!select.value) return;
-        var parts = select.value.split('|');
-        var start = parts[0], end = parts[1];
+        if (!selectedSlot) return;
+        var start = selectedSlot.start, end = selectedSlot.end;
 
         payBtn.disabled = true;
-        payBtn.textContent = 'Processing payment\u2026';
+        payBtn.textContent = 'Processing payment\\u2026';
         if (msgEl) msgEl.style.display = 'none';
 
         try {
           var intentRes = await fetch(BASE_URL + '/api/payment/intent', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ quoteId: QUOTE_ID, start }),
+            body: JSON.stringify({ quoteId: QUOTE_ID, start: start }),
           });
           var intentData = await intentRes.json();
           if (!intentRes.ok) throw new Error(intentData.error || 'Could not create payment.');
 
-          // Update button to show actual total
-          payBtn.textContent = '\u2728 Confirm, Agree & Pay \u2014 $' + intentData.amount.toFixed(2) + ' CAD';
+          payBtn.textContent = '\\u2728 Confirm, Agree & Pay \\u2014 $' + intentData.amount.toFixed(2) + ' CAD';
 
           var result = await stripe.confirmCardPayment(intentData.clientSecret, {
             payment_method: { card: cardElement },
           });
           if (result.error) throw new Error(result.error.message);
 
-          payBtn.textContent = 'Confirming booking\u2026';
+          payBtn.textContent = 'Confirming booking\\u2026';
           var bookRes = await fetch(BASE_URL + '/api/booking/book', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ quoteId: QUOTE_ID, start, end, paymentIntentId: result.paymentIntent.id }),
+            body: JSON.stringify({ quoteId: QUOTE_ID, start: start, end: end, paymentIntentId: result.paymentIntent.id }),
           });
           var bookData = await bookRes.json();
 
           if (bookRes.ok && bookData.success) {
-            document.querySelectorAll('.step-label,.divider,.terms-box,#termsLabel,.card-section,.secure-note,#slot,#totalDisplay').forEach(function(el){ el.style.display='none'; });
+            document.querySelectorAll('.step-label,.divider,.terms-box,#termsLabel,.card-section,.secure-note,#calWrap,#slotsWrap,#totalDisplay').forEach(function(el){ el.style.display='none'; });
             payBtn.style.display = 'none';
             if (msgEl) {
               msgEl.className = 'msg success';
               msgEl.style.display = 'block';
-              msgEl.innerHTML = '\u2728 <strong>You\'re all booked!</strong> Payment received &mdash; a confirmation email is on its way. We look forward to making your space sparkle!';
+              msgEl.innerHTML = '\\u2728 <strong>You\\'re all booked!</strong> Payment received &mdash; a confirmation email is on its way. We look forward to making your space sparkle!';
             }
           } else {
             throw new Error(bookData.error || 'Booking failed after payment. Please contact us.');
@@ -1774,7 +1919,7 @@ function buildBookingHtml(
             msgEl.textContent = err.message || 'Something went wrong. Please try again or call us at 343-321-6242.';
           }
           payBtn.disabled = false;
-          payBtn.textContent = '\u2728 Confirm, Agree & Pay \u2014 $' + baseTotal.toFixed(2) + ' CAD';
+          payBtn.textContent = '\\u2728 Confirm, Agree & Pay \\u2014 $' + baseTotal.toFixed(2) + ' CAD';
         }
       });
     })();

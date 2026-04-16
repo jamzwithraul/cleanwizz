@@ -34,8 +34,20 @@ const SLOT_DURATION_HOURS = 2; // each cleaning slot is 2 hours
 const DAYS_AHEAD = 14; // show availability 2 weeks out
 const WORKING_DAYS = [1, 2, 3, 4, 5, 6]; // Mon=1 … Sat=6 (0=Sun)
 
+// ── Slot status ──────────────────────────────────────────────────────────────
+export type SlotStatus = "available" | "booked" | "blocked";
+export interface SlotInfo {
+  start: string;
+  end: string;
+  label: string;
+  date: string;       // YYYY-MM-DD in ET
+  hour: number;       // start hour in ET (e.g. 8, 9, 13, 14…)
+  dayOfWeek: number;  // 0=Sun, 1=Mon … 6=Sat
+  status: SlotStatus; // available, booked (Google Cal), blocked (business rule)
+}
+
 // ── Get available slots ───────────────────────────────────────────────────────
-export async function getAvailableSlots(): Promise<{ start: string; end: string; label: string }[]> {
+export async function getAvailableSlots(): Promise<SlotInfo[]> {
   const auth = getAuth();
   const calendar = google.calendar({ version: "v3", auth });
 
@@ -60,11 +72,8 @@ export async function getAvailableSlots(): Promise<{ start: string; end: string;
   }));
 
   // Generate candidate slots in Eastern Time
-  const slots: { start: string; end: string; label: string }[] = [];
+  const slots: SlotInfo[] = [];
 
-  // Iterate day by day over the window
-  const cursorDate = new Date(timeMin);
-  // Reset to midnight Eastern of the next day
   const etFormatter = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Toronto",
     year: "numeric", month: "2-digit", day: "2-digit",
@@ -80,6 +89,7 @@ export async function getAvailableSlots(): Promise<{ start: string; end: string;
     const etYear  = etParts.find(p => p.type === "year")!.value;
     const etMonth = etParts.find(p => p.type === "month")!.value;
     const etDay   = etParts.find(p => p.type === "day")!.value;
+    const dateStr = `${etYear}-${etMonth}-${etDay}`;
 
     for (const window of SLOT_WINDOWS) {
       for (let h = window.start; h + SLOT_DURATION_HOURS <= window.end; h++) {
@@ -92,28 +102,46 @@ export async function getAvailableSlots(): Promise<{ start: string; end: string;
         // Skip past slots
         if (slotStart <= now) continue;
 
-        // Skip weekends (check ET day of week)
+        // Skip Sundays (check ET day of week)
         const etDow = slotStart.toLocaleDateString("en-CA", { timeZone: "America/Toronto", weekday: "short" });
         if (etDow === "Sun") continue;
 
-        // Check overlap with busy blocks
-        const isBusy = busyBlocks.some(b => slotStart < b.end && slotEnd > b.start);
-        if (!isBusy) {
-          const label = slotStart.toLocaleString("en-CA", {
-            timeZone: "America/Toronto",
-            weekday: "short",
-            month:   "short",
-            day:     "numeric",
-            hour:    "numeric",
-            minute:  "2-digit",
-            hour12:  true,
-          });
-          slots.push({
-            start: slotStart.toISOString(),
-            end:   slotEnd.toISOString(),
-            label,
-          });
+        // Determine day of week (0=Sun … 6=Sat)
+        const dayOfWeek = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(etDow);
+
+        const label = slotStart.toLocaleString("en-CA", {
+          timeZone: "America/Toronto",
+          weekday: "short",
+          month:   "short",
+          day:     "numeric",
+          hour:    "numeric",
+          minute:  "2-digit",
+          hour12:  true,
+        });
+
+        // Determine status: business rule first, then Google Calendar
+        let status: SlotStatus = "available";
+
+        // Business rule: Mon–Fri slots starting before 4 PM are blocked
+        if (dayOfWeek >= 1 && dayOfWeek <= 5 && h < 16) {
+          status = "blocked";
         }
+
+        // Google Calendar: check overlap with busy blocks
+        if (status === "available") {
+          const isBusy = busyBlocks.some(b => slotStart < b.end && slotEnd > b.start);
+          if (isBusy) status = "booked";
+        }
+
+        slots.push({
+          start: slotStart.toISOString(),
+          end:   slotEnd.toISOString(),
+          label,
+          date: dateStr,
+          hour: h,
+          dayOfWeek,
+          status,
+        });
       }
     }
   }
