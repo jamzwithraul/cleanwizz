@@ -624,7 +624,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
                   <tr><td style="padding:6px 0;color:#555;">Phone</td><td>${client?.phone || "—"}</td></tr>
                   <tr><td style="padding:6px 0;color:#555;">Address</td><td>${client?.address || "—"}</td></tr>
                   <tr><td style="padding:6px 0;color:#555;">Service</td><td>${q.propertyType}</td></tr>
-                  <tr><td style="padding:6px 0;color:#555;">Sq Ft</td><td>${q.squareFootage}</td></tr>
+                  <tr><td style="padding:6px 0;color:#555;">Sq Ft (areas cleaned)</td><td>${q.squareFootage}</td></tr>
                   <tr><td style="padding:6px 0;color:#555;">Total</td><td><strong>$${q.total.toFixed(2)} CAD</strong></td></tr>
                 </table>
                 <p style="color:#555;font-size:13px;">Line items:<br>${linesSummary}</p>

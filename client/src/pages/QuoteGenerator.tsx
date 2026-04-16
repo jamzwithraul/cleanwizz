@@ -50,12 +50,12 @@ const SERVICE_OPTIONS = [
   {
     value: "deep",
     label: "Deep Clean",
-    description: "Flat-rate — everything in Standard + inside fridge, cabinets, baseboards, windows, grout",
+    description: "Flat-rate — everything in Standard + inside fridge, cabinets, baseboards, windows, grout, clean kitchen sink",
   },
   {
     value: "moveout",
     label: "Move-In / Move-Out",
-    description: "Flat-rate — everything in Deep + behind fridge/stove, grout scrubbing, all interior windows",
+    description: "Flat-rate — everything in Deep + behind fridge/stove, grout scrubbing, all interior windows, clean kitchen sink",
   },
 ] as const;
 
@@ -349,7 +349,7 @@ export default function QuoteGenerator() {
                       name="squareFootage"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Square Footage</FormLabel>
+                          <FormLabel>Sq. ft. of areas to be cleaned</FormLabel>
                           <FormControl>
                             <Input
                               data-testid="input-sqft"
@@ -362,6 +362,7 @@ export default function QuoteGenerator() {
                               onChange={e => field.onChange(parseFloat(e.target.value) || 0)}
                             />
                           </FormControl>
+                          <p className="text-xs text-muted-foreground">Only include rooms to be cleaned — not your entire home</p>
                           <FormMessage />
                         </FormItem>
                       )}

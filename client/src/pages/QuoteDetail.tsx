@@ -221,7 +221,7 @@ export default function QuoteDetail() {
                   <p className="font-medium capitalize">{quote.propertyType}</p>
                 </div>
                 <div>
-                  <p className="text-muted-foreground text-xs">Square Footage</p>
+                  <p className="text-muted-foreground text-xs">Sq. Ft. (Areas Cleaned)</p>
                   <p className="font-medium">{quote.squareFootage > 0 ? `${quote.squareFootage} sq ft` : "—"}</p>
                 </div>
                 <div>
