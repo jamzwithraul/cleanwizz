@@ -70,8 +70,6 @@ create table if not exists settings (
   id                    text primary key default 'default',
   price_per_sqft        numeric(10,4) not null default 0.12,
   base_rate             numeric(10,2) not null default 80,
-  per_bedroom           numeric(10,2) not null default 15,
-  per_bathroom          numeric(10,2) not null default 20,
   fridge_price          numeric(10,2) not null default 20,
   oven_price            numeric(10,2) not null default 25,
   windows_price         numeric(10,2) not null default 40,

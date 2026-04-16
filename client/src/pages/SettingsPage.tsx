@@ -43,8 +43,6 @@ import { useState } from "react";
 const pricingSchema = z.object({
   baseRate: z.number().min(0),
   pricePerSqft: z.number().min(0),
-  perBedroom: z.number().min(0),
-  perBathroom: z.number().min(0),
   fridgePrice: z.number().min(0),
   groutPrice: z.number().min(0),
   windowsPrice: z.number().min(0),
@@ -98,8 +96,6 @@ export default function SettingsPage() {
     defaultValues: {
       baseRate: 80,
       pricePerSqft: 0.25,
-      perBedroom: 15,
-      perBathroom: 20,
       fridgePrice: 25,
       groutPrice: 35,
       windowsPrice: 40,
@@ -110,8 +106,6 @@ export default function SettingsPage() {
     values: settings ? {
       baseRate: settings.baseRate,
       pricePerSqft: settings.pricePerSqft,
-      perBedroom: settings.perBedroom,
-      perBathroom: settings.perBathroom,
       fridgePrice: settings.fridgePrice,
       groutPrice: settings.groutPrice ?? 35,
       windowsPrice: settings.windowsPrice,
@@ -224,8 +218,6 @@ export default function SettingsPage() {
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Base Rates</p>
                     <PricingField label="Base Rate (daytime)" name="baseRate" form={pricingForm} />
                     <PricingField label="Price per Sq Ft" name="pricePerSqft" form={pricingForm} />
-                    <PricingField label="Per Bedroom" name="perBedroom" form={pricingForm} />
-                    <PricingField label="Per Bathroom" name="perBathroom" form={pricingForm} />
 
                     <Separator className="my-3" />
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Service Surcharges</p>

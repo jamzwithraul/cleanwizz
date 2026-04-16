@@ -15,8 +15,6 @@
  *   line_total       → lineTotal
  *   price_per_sqft   → pricePerSqft
  *   base_rate        → baseRate
- *   per_bedroom      → perBedroom
- *   per_bathroom     → perBathroom
  *   fridge_price     → fridgePrice
  *   oven_price       → ovenPrice
  *   windows_price    → windowsPrice
@@ -125,8 +123,6 @@ interface SettingsRow {
   id: string;
   price_per_sqft: number;
   base_rate: number;
-  per_bedroom: number;
-  per_bathroom: number;
   fridge_price: number;
   grout_price: number;
   windows_price: number;
@@ -199,8 +195,6 @@ function mapSettings(r: SettingsRow): Settings {
     id: r.id,
     pricePerSqft: Number(r.price_per_sqft),
     baseRate: Number(r.base_rate),
-    perBedroom: Number(r.per_bedroom),
-    perBathroom: Number(r.per_bathroom),
     fridgePrice: Number(r.fridge_price),
     groutPrice: Number(r.grout_price ?? 35),
     windowsPrice: Number(r.windows_price),
@@ -467,8 +461,6 @@ export function createSupabaseStorage(): IStorageAsync {
       };
       if (data.pricePerSqft        !== undefined) patch.price_per_sqft        = data.pricePerSqft;
       if (data.baseRate             !== undefined) patch.base_rate             = data.baseRate;
-      if (data.perBedroom           !== undefined) patch.per_bedroom           = data.perBedroom;
-      if (data.perBathroom          !== undefined) patch.per_bathroom          = data.perBathroom;
       if (data.fridgePrice          !== undefined) patch.fridge_price          = data.fridgePrice;
       if (data.groutPrice            !== undefined) patch.grout_price            = data.groutPrice;
       if (data.windowsPrice         !== undefined) patch.windows_price         = data.windowsPrice;

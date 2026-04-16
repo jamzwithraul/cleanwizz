@@ -75,21 +75,8 @@ const PROPERTY_TYPES = [
   { value: "other", label: "Other" },
 ];
 
-// Mirror of server-side resolveServiceType
-function resolveServiceType(values: QuoteFormValues): QuoteFormValues['serviceType'] {
-  if (values.serviceType === 'moveout') return 'moveout';
-  if (
-    values.serviceType === 'standard' && (
-      values.bathrooms > 1 ||
-      values.bedrooms >= 3 ||
-      values.squareFootage > 1500
-    )
-  ) return 'deep';
-  return values.serviceType;
-}
-
 function useLivePrice(values: QuoteFormValues, settings: Settings | undefined) {
-  if (!settings) return { items: [], subtotal: 0, discount: 0, total: 0, autoUpgraded: false };
+  if (!settings) return { items: [], subtotal: 0, discount: 0, total: 0 };
 
   const s = settings;
   const items: { label: string; amount: number }[] = [];
@@ -103,19 +90,9 @@ function useLivePrice(values: QuoteFormValues, settings: Settings | undefined) {
     });
   }
 
-  if (values.bedrooms > 0) {
-    items.push({ label: `Bedrooms (${values.bedrooms} × $${s.perBedroom})`, amount: values.bedrooms * s.perBedroom });
-  }
-
-  if (values.bathrooms > 0) {
-    items.push({ label: `Bathrooms (${values.bathrooms} × $${s.perBathroom})`, amount: values.bathrooms * s.perBathroom });
-  }
-
-  const effectiveType = resolveServiceType(values);
-  const autoUpgraded = effectiveType !== values.serviceType;
-  if (effectiveType === "deep") {
+  if (values.serviceType === "deep") {
     items.push({ label: "Deep clean surcharge", amount: s.deepCleanSurcharge });
-  } else if (effectiveType === "moveout") {
+  } else if (values.serviceType === "moveout") {
     items.push({ label: "Move-in/out surcharge", amount: s.moveoutSurcharge });
   }
 
@@ -132,7 +109,7 @@ function useLivePrice(values: QuoteFormValues, settings: Settings | undefined) {
   }
 
   const subtotal = items.reduce((s, i) => s + i.amount, 0);
-  return { items, subtotal, discount: 0, total: subtotal, autoUpgraded, effectiveType };
+  return { items, subtotal, discount: 0, total: subtotal };
 }
 
 const QUOTE_DRAFT_KEY = 'cw_quote_draft';
@@ -185,7 +162,7 @@ export default function QuoteGenerator() {
     } catch { /* quota exceeded or private mode */ }
   }, [values.propertyType, values.squareFootage, values.bedrooms, values.bathrooms, values.serviceType, values.addons]);
 
-  const { items, subtotal, autoUpgraded, effectiveType } = useLivePrice(values, settings);
+  const { items, subtotal } = useLivePrice(values, settings);
 
   let discount = 0;
   if (promoApplied) {
@@ -472,18 +449,10 @@ export default function QuoteGenerator() {
                     )}
                   />
 
-                  {/* Auto-upgrade notice */}
-                  {autoUpgraded && (
-                    <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm">
-                      <p className="font-semibold text-amber-800">Auto-upgraded to Deep Clean</p>
-                      <p className="text-amber-700 text-xs mt-0.5">Your property details (bathrooms, bedrooms, or sq ft) require a Deep Clean. Add-ons are included.</p>
-                    </div>
-                  )}
-
                   <Separator />
 
                   {/* Add-ons: only shown for Standard (deep/moveout include everything) */}
-                  {effectiveType === "standard" ? (
+                  {values.serviceType === "standard" ? (
                     <div>
                       <p className="text-sm font-medium mb-1">Add-ons <span className="text-xs text-muted-foreground font-normal">(Standard only — included in Deep &amp; Move-In/Out)</span></p>
                       <FormField
@@ -646,10 +615,7 @@ export default function QuoteGenerator() {
                 {settings && (
                   <div className="rounded-lg bg-muted p-3">
                     <p className="text-xs font-medium text-muted-foreground mb-1">Using current rates</p>
-                    <div className="space-y-1">
-                      <p className="text-xs text-muted-foreground">Base: ${settings.baseRate} · Bedroom: ${settings.perBedroom} · Bath: ${settings.perBathroom}</p>
-                      <p className="text-xs text-muted-foreground">Sq ft: ${settings.pricePerSqft}/sq ft</p>
-                    </div>
+                    <p className="text-xs text-muted-foreground">Base: ${settings.baseRate} · Sq ft: ${settings.pricePerSqft}/sq ft</p>
                   </div>
                 )}
               </div>
