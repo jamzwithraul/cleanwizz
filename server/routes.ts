@@ -157,6 +157,67 @@ const stripe = process.env.STRIPE_SECRET_KEY
 
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
+// ── Fuzzy name matching (for PRC vs Stripe Identity name check) ──────────────
+// Returns a score 0..1 using token-set Jaccard + Levenshtein hybrid.
+// Normalizes diacritics, punctuation, and common honorifics so "Raúl Alvarado Jr."
+// matches "Raul Alvarado Junior" cleanly.
+function normalizeName(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // strip diacritics
+    .toLowerCase()
+    .replace(/\b(jr|junior|sr|senior|ii|iii|iv|mr|mrs|ms|mx|dr)\b\.?/g, "") // honorifics/suffixes
+    .replace(/[^a-z0-9\s]/g, " ") // punctuation -> space
+    .replace(/\s+/g, " ")
+    .trim();
+}
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const dp = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = dp[0];
+    dp[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = dp[j];
+      dp[j] =
+        a[i - 1] === b[j - 1]
+          ? prev
+          : 1 + Math.min(prev, dp[j], dp[j - 1]);
+      prev = tmp;
+    }
+  }
+  return dp[b.length];
+}
+function fuzzyNameScore(a: string, b: string): number {
+  const an = normalizeName(a);
+  const bn = normalizeName(b);
+  if (!an || !bn) return 0;
+  if (an === bn) return 1;
+  const at = an.split(" ").filter(Boolean);
+  const bt = bn.split(" ").filter(Boolean);
+  const aSet: Record<string, true> = {};
+  const bSet: Record<string, true> = {};
+  at.forEach((t) => (aSet[t] = true));
+  bt.forEach((t) => (bSet[t] = true));
+  const aKeys = Object.keys(aSet);
+  const bKeys = Object.keys(bSet);
+  // Token-set Jaccard
+  let inter = 0;
+  aKeys.forEach((k) => {
+    if (bSet[k]) inter++;
+  });
+  const union = aKeys.length + bKeys.length - inter;
+  const jaccard = union === 0 ? 0 : inter / union;
+  // Levenshtein similarity on full normalized strings
+  const dist = levenshtein(an, bn);
+  const maxLen = Math.max(an.length, bn.length);
+  const lev = maxLen === 0 ? 1 : 1 - dist / maxLen;
+  // Blend: token-set captures reordering/extra middle names; Levenshtein captures typos
+  return 0.6 * jaccard + 0.4 * lev;
+}
+
 // ── Pricing Engine ────────────────────────────────────────────────────────────
 // ── Transparent Pricing Constants ─────────────────────────────────────────────
 const BASE_FEE = 139;              // base fee ($139 flat — admin, insurance, supplies, travel buffer)
@@ -1178,6 +1239,315 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       res.status(500).json({ error: err.message });
     }
   });
+
+  // ══════════════════════════════════════════════════════════════
+  // Stripe Identity — Government ID + selfie verification
+  // Platform pays all verification costs. Harry Spotter never stores
+  // the ID image itself — only the verified name/DOB/status from Stripe.
+  // ══════════════════════════════════════════════════════════════
+
+  // POST /api/identity/create-session — Create a Stripe Identity VerificationSession
+  // Returns the hosted verification URL the contractor is redirected to.
+  app.post("/api/identity/create-session", async (req, res) => {
+    try {
+      if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
+      if (!hsSupa) return res.status(503).json({ error: "Supabase not configured" });
+      const { contractorId } = req.body || {};
+      if (!contractorId) return res.status(400).json({ error: "contractorId required" });
+
+      // Look up contractor to get email + name for Stripe metadata
+      const { data: contractor, error: cErr } = await hsSupa
+        .from("contractor_applications")
+        .select("id, full_name, email, identity_verification_id, identity_status")
+        .eq("id", contractorId)
+        .single();
+      if (cErr || !contractor) {
+        return res.status(404).json({ error: "Contractor not found" });
+      }
+
+      // If already verified, short-circuit
+      if (contractor.identity_status === "verified") {
+        return res.json({ alreadyVerified: true, status: "verified" });
+      }
+
+      // If a session already exists and is still usable, reuse it
+      if (contractor.identity_verification_id) {
+        try {
+          const existing = await stripe.identity.verificationSessions.retrieve(
+            contractor.identity_verification_id,
+          );
+          if (existing.status === "requires_input" && existing.url) {
+            return res.json({
+              verificationSessionId: existing.id,
+              url: existing.url,
+              status: existing.status,
+              reused: true,
+            });
+          }
+        } catch {
+          // Fall through and create a new one
+        }
+      }
+
+      const returnUrl = `https://harryspottercleaning.ca/contractor?identity=complete&cid=${contractorId}`;
+
+      const session = await stripe.identity.verificationSessions.create({
+        type: "document",
+        options: {
+          document: {
+            require_matching_selfie: true,
+            require_live_capture: true,
+            allowed_types: ["driving_license", "passport", "id_card"],
+          },
+        },
+        metadata: {
+          contractor_id: contractorId,
+          contractor_email: contractor.email,
+          platform: "harry_spotter_cleaning",
+        },
+        return_url: returnUrl,
+      });
+
+      await hsSupa
+        .from("contractor_applications")
+        .update({
+          identity_verification_id: session.id,
+          identity_status: "pending",
+          identity_last_error: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", contractorId);
+
+      console.log(
+        `[stripe-identity] Created VerificationSession ${session.id} for contractor ${contractorId}`,
+      );
+
+      res.json({
+        verificationSessionId: session.id,
+        url: session.url,
+        status: session.status,
+      });
+    } catch (err: any) {
+      console.error("[stripe-identity] Create error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/identity/status/:contractorId — Latest identity status for portal UI
+  app.get("/api/identity/status/:contractorId", async (req, res) => {
+    try {
+      if (!hsSupa) return res.status(503).json({ error: "Supabase not configured" });
+      const { data, error } = await hsSupa
+        .from("contractor_applications")
+        .select(
+          "identity_verification_id, identity_status, identity_verified_at, identity_verified_name, identity_last_error",
+        )
+        .eq("id", req.params.contractorId)
+        .single();
+      if (error || !data) return res.status(404).json({ error: "Not found" });
+      res.json({
+        verificationSessionId: data.identity_verification_id,
+        status: data.identity_status,
+        verifiedAt: data.identity_verified_at,
+        verifiedName: data.identity_verified_name,
+        lastError: data.identity_last_error,
+      });
+    } catch (err: any) {
+      console.error("[stripe-identity] Status error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/identity/check-prc-name — Fuzzy-match contractor-provided PRC name vs Stripe-verified name
+  // Called by the frontend right after the PRC file is uploaded.
+  // Writes prc_name_match + prc_name_match_score. Does NOT block — admin reviews mismatches.
+  app.post("/api/identity/check-prc-name", async (req, res) => {
+    try {
+      if (!hsSupa) return res.status(503).json({ error: "Supabase not configured" });
+      const { contractorId, prcName } = req.body || {};
+      if (!contractorId || !prcName) {
+        return res.status(400).json({ error: "contractorId and prcName required" });
+      }
+
+      const { data: contractor, error: cErr } = await hsSupa
+        .from("contractor_applications")
+        .select("id, identity_status, identity_verified_name")
+        .eq("id", contractorId)
+        .single();
+      if (cErr || !contractor) return res.status(404).json({ error: "Contractor not found" });
+
+      if (contractor.identity_status !== "verified" || !contractor.identity_verified_name) {
+        await hsSupa
+          .from("contractor_applications")
+          .update({ prc_name_match: "no_identity", prc_name_match_score: null })
+          .eq("id", contractorId);
+        return res.json({ match: "no_identity", score: null, reason: "Identity not verified yet" });
+      }
+
+      const score = fuzzyNameScore(contractor.identity_verified_name, prcName);
+      const match: "match" | "mismatch" = score >= 0.82 ? "match" : "mismatch";
+
+      await hsSupa
+        .from("contractor_applications")
+        .update({ prc_name_match: match, prc_name_match_score: score })
+        .eq("id", contractorId);
+
+      console.log(
+        `[stripe-identity] PRC name check for ${contractorId}: "${contractor.identity_verified_name}" vs "${prcName}" = ${match} (${score.toFixed(3)})`,
+      );
+
+      res.json({
+        match,
+        score,
+        identityName: contractor.identity_verified_name,
+        prcName,
+      });
+    } catch (err: any) {
+      console.error("[stripe-identity] PRC name check error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/identity/webhook — Stripe Identity webhook handler
+  // Configure this URL in Stripe Dashboard → Developers → Webhooks.
+  // Subscribe to: identity.verification_session.verified,
+  //               identity.verification_session.requires_input,
+  //               identity.verification_session.canceled,
+  //               identity.verification_session.processing
+  app.post("/api/identity/webhook", async (req, res) => {
+    if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
+    if (!hsSupa) return res.status(503).json({ error: "Supabase not configured" });
+
+    const sig = req.headers["stripe-signature"] as string | undefined;
+    const secret = process.env.STRIPE_IDENTITY_WEBHOOK_SECRET || "";
+    if (!sig || !secret) {
+      console.error("[stripe-identity] Missing signature or webhook secret");
+      return res.status(400).send("Missing signature or secret");
+    }
+
+    let event: Stripe.Event;
+    try {
+      const raw = (req as any).rawBody;
+      event = stripe.webhooks.constructEvent(raw, sig, secret);
+    } catch (err: any) {
+      console.error("[stripe-identity] Webhook signature verification failed:", err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    try {
+      const session = event.data.object as Stripe.Identity.VerificationSession;
+      const contractorId = (session.metadata as any)?.contractor_id as string | undefined;
+      if (!contractorId) {
+        console.warn("[stripe-identity] Webhook event missing contractor_id metadata", event.type);
+        return res.json({ received: true, warning: "no contractor_id" });
+      }
+
+      // Fetch verified outputs (only available on .verified events — for others, session.verified_outputs is null)
+      let verifiedName: string | null = null;
+      let verifiedDob: string | null = null; // YYYY-MM-DD
+      if (event.type === "identity.verification_session.verified") {
+        // Need the full session with verified_outputs expanded
+        const full = await stripe.identity.verificationSessions.retrieve(session.id, {
+          expand: ["verified_outputs"],
+        } as any);
+        const vo: any = (full as any).verified_outputs;
+        if (vo) {
+          const first = vo.first_name ?? "";
+          const last = vo.last_name ?? "";
+          verifiedName = `${first} ${last}`.trim() || null;
+          if (vo.dob && vo.dob.year && vo.dob.month && vo.dob.day) {
+            const mm = String(vo.dob.month).padStart(2, "0");
+            const dd = String(vo.dob.day).padStart(2, "0");
+            verifiedDob = `${vo.dob.year}-${mm}-${dd}`;
+          }
+        }
+      }
+
+      let newStatus:
+        | "pending"
+        | "verified"
+        | "requires_input"
+        | "canceled"
+        | "failed" = "pending";
+      switch (event.type) {
+        case "identity.verification_session.verified":
+          newStatus = "verified";
+          break;
+        case "identity.verification_session.requires_input":
+          newStatus = "requires_input";
+          break;
+        case "identity.verification_session.canceled":
+          newStatus = "canceled";
+          break;
+        case "identity.verification_session.processing":
+          newStatus = "pending";
+          break;
+        default:
+          console.log(`[stripe-identity] Ignoring event ${event.type}`);
+          return res.json({ received: true, ignored: event.type });
+      }
+
+      const lastError = (session.last_error as any)?.reason || (session.last_error as any)?.code || null;
+
+      const updateFields: Record<string, any> = {
+        identity_status: newStatus,
+        identity_last_error: lastError,
+        updated_at: new Date().toISOString(),
+      };
+      if (newStatus === "verified") {
+        updateFields.identity_verified_at = new Date().toISOString();
+        if (verifiedName) updateFields.identity_verified_name = verifiedName;
+        if (verifiedDob) updateFields.identity_verified_dob = verifiedDob;
+      }
+
+      const { error: updErr } = await hsSupa
+        .from("contractor_applications")
+        .update(updateFields)
+        .eq("id", contractorId);
+      if (updErr) {
+        console.error("[stripe-identity] Update failed:", updErr.message);
+        return res.status(500).json({ error: updErr.message });
+      }
+
+      // Audit log
+      await hsSupa.from("identity_verifications").insert({
+        contractor_id: contractorId,
+        stripe_verification_session_id: session.id,
+        event_type: event.type,
+        status: newStatus,
+        verified_name: verifiedName,
+        verified_dob: verifiedDob,
+        last_error: lastError,
+        raw_event: event as any,
+      });
+
+      // If identity just verified and a PRC filename was previously stored, re-check name match
+      if (newStatus === "verified" && verifiedName) {
+        const { data: full } = await hsSupa
+          .from("contractor_applications")
+          .select("full_name")
+          .eq("id", contractorId)
+          .single();
+        if (full?.full_name) {
+          const score = fuzzyNameScore(verifiedName, full.full_name);
+          const matchFlag: "match" | "mismatch" = score >= 0.82 ? "match" : "mismatch";
+          await hsSupa
+            .from("contractor_applications")
+            .update({ prc_name_match: matchFlag, prc_name_match_score: score })
+            .eq("id", contractorId);
+        }
+      }
+
+      console.log(
+        `[stripe-identity] Webhook ${event.type} → contractor ${contractorId} status=${newStatus}`,
+      );
+      res.json({ received: true });
+    } catch (err: any) {
+      console.error("[stripe-identity] Webhook handler error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
 
   // ══════════════════════════════════════════════════════════════════════════════
   // POST /api/job/complete — Job-complete pipeline
