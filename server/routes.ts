@@ -214,6 +214,26 @@ function fuzzyNameScore(a: string, b: string): number {
   const dist = levenshtein(an, bn);
   const maxLen = Math.max(an.length, bn.length);
   const lev = maxLen === 0 ? 1 : 1 - dist / maxLen;
+
+  // Superset boost: if one name's tokens are fully contained in the other
+  // (e.g., app record "Raul Alvarado Jr" vs gov ID "Raul Edmundo Alvarado"),
+  // treat the extra middle names as a non-fatal difference. We also require
+  // that the first and last tokens agree so we don't inflate unrelated names.
+  const smaller = aKeys.length <= bKeys.length ? aKeys : bKeys;
+  const larger = aKeys.length <= bKeys.length ? bSet : aSet;
+  const smallerIsSubset =
+    smaller.length > 0 && smaller.every((t) => larger[t]);
+  const firstLastMatch =
+    at.length > 0 &&
+    bt.length > 0 &&
+    at[0] === bt[0] &&
+    at[at.length - 1] === bt[bt.length - 1];
+  if (smallerIsSubset && firstLastMatch) {
+    // Guarantees the score clears the 0.82 match threshold while still
+    // leaving headroom (<1) so an exact match scores higher.
+    return Math.max(0.6 * jaccard + 0.4 * lev, 0.9);
+  }
+
   // Blend: token-set captures reordering/extra middle names; Levenshtein captures typos
   return 0.6 * jaccard + 0.4 * lev;
 }
