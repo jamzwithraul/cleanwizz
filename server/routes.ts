@@ -1408,6 +1408,123 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
   });
 
+  // POST /api/identity/sync/:contractorId — Manually pull latest verification state from Stripe
+  // Use this if a webhook is missed/failed. Idempotent — safe to call repeatedly.
+  app.post("/api/identity/sync/:contractorId", async (req, res) => {
+    try {
+      if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
+      if (!hsSupa) return res.status(503).json({ error: "Supabase not configured" });
+      const { contractorId } = req.params;
+
+      const { data: contractor, error: cErr } = await hsSupa
+        .from("contractor_applications")
+        .select("id, full_name, identity_verification_id")
+        .eq("id", contractorId)
+        .single();
+      if (cErr || !contractor) return res.status(404).json({ error: "Contractor not found" });
+      if (!contractor.identity_verification_id) {
+        return res.status(400).json({ error: "No verification session for this contractor" });
+      }
+
+      const session = await stripe.identity.verificationSessions.retrieve(
+        contractor.identity_verification_id,
+        { expand: ["verified_outputs"] } as any,
+      );
+
+      const vo: any = (session as any).verified_outputs;
+      let verifiedName: string | null = null;
+      let verifiedDob: string | null = null;
+      if (vo) {
+        const first = vo.first_name ?? "";
+        const last = vo.last_name ?? "";
+        verifiedName = `${first} ${last}`.trim() || null;
+        if (vo.dob && vo.dob.year && vo.dob.month && vo.dob.day) {
+          const mm = String(vo.dob.month).padStart(2, "0");
+          const dd = String(vo.dob.day).padStart(2, "0");
+          verifiedDob = `${vo.dob.year}-${mm}-${dd}`;
+        }
+      }
+
+      let newStatus:
+        | "pending"
+        | "verified"
+        | "requires_input"
+        | "canceled"
+        | "failed" = "pending";
+      switch (session.status) {
+        case "verified":
+          newStatus = "verified";
+          break;
+        case "requires_input":
+          newStatus = "requires_input";
+          break;
+        case "canceled":
+          newStatus = "canceled";
+          break;
+        case "processing":
+          newStatus = "pending";
+          break;
+        default:
+          newStatus = "pending";
+      }
+
+      const lastError = (session.last_error as any)?.reason || (session.last_error as any)?.code || null;
+      const updateFields: Record<string, any> = {
+        identity_status: newStatus,
+        identity_last_error: lastError,
+        updated_at: new Date().toISOString(),
+      };
+      if (newStatus === "verified") {
+        updateFields.identity_verified_at = new Date().toISOString();
+        if (verifiedName) updateFields.identity_verified_name = verifiedName;
+        if (verifiedDob) updateFields.identity_verified_dob = verifiedDob;
+      }
+
+      const { error: updErr } = await hsSupa
+        .from("contractor_applications")
+        .update(updateFields)
+        .eq("id", contractorId);
+      if (updErr) return res.status(500).json({ error: updErr.message });
+
+      await hsSupa.from("identity_verifications").insert({
+        contractor_id: contractorId,
+        stripe_verification_session_id: session.id,
+        event_type: "manual_sync",
+        status: newStatus,
+        verified_name: verifiedName,
+        verified_dob: verifiedDob,
+        last_error: lastError,
+        raw_event: { source: "manual_sync", session_status: session.status } as any,
+      });
+
+      // Re-run PRC name match if now verified
+      if (newStatus === "verified" && verifiedName && contractor.full_name) {
+        const score = fuzzyNameScore(verifiedName, contractor.full_name);
+        const matchFlag: "match" | "mismatch" = score >= 0.82 ? "match" : "mismatch";
+        await hsSupa
+          .from("contractor_applications")
+          .update({ prc_name_match: matchFlag, prc_name_match_score: score })
+          .eq("id", contractorId);
+      }
+
+      console.log(
+        `[stripe-identity] Manual sync for ${contractorId}: stripe_status=${session.status}, new_db_status=${newStatus}, verified_name=${verifiedName}`,
+      );
+
+      res.json({
+        contractorId,
+        stripeStatus: session.status,
+        dbStatus: newStatus,
+        verifiedName,
+        verifiedDob,
+        lastError,
+      });
+    } catch (err: any) {
+      console.error("[stripe-identity] Sync error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // POST /api/identity/webhook — Stripe Identity webhook handler
   // Configure this URL in Stripe Dashboard → Developers → Webhooks.
   // Subscribe to: identity.verification_session.verified,
