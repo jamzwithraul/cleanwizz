@@ -239,59 +239,161 @@ function fuzzyNameScore(a: string, b: string): number {
 }
 
 // ── Pricing Engine ────────────────────────────────────────────────────────────
-// ── Transparent Pricing Constants ─────────────────────────────────────────────
-const BASE_FEE = 139;              // base fee ($139 flat — admin, insurance, supplies, travel buffer)
-const SQFT_RATE = 0.25;            // per-square-foot rate
+// Per-service minimums + sqft rates. Discounts apply ONLY to the portion of
+// sqftPrice above the minimum; add-ons are layered on top and never discounted.
 const OVEN_PRICE = 100;            // in-oven cleaning add-on
 const LAUNDRY_PRICE = 100;         // laundry wash & fold add-on
 const HST_RATE = 0.13;             // Ontario HST
 
+type ServiceType = "standard" | "deep" | "moveout";
+
+const SERVICE_PRICING: Record<ServiceType, { minimum: number; sqftRate: number; label: string }> = {
+  standard: { minimum: 289, sqftRate: 0.29, label: "Standard Clean" },
+  deep:     { minimum: 499, sqftRate: 0.39, label: "Deep Clean" },
+  moveout:  { minimum: 699, sqftRate: 0.49, label: "Move-In/Move-Out Clean" },
+};
+
+// Flat contractor payouts (per job, regardless of quote total)
+const CONTRACTOR_PAYOUT: Record<ServiceType, number> = {
+  standard: 160,
+  deep:     240,
+  moveout:  320,
+};
+
+// Non-stacking discount rates. Take the larger of the eligible discounts.
+const DISCOUNT_RATES = {
+  welcome: 0.15,      // WELCOME15 single-booking promo
+  multi:   0.20,      // 2+ sessions multi-booking
+};
+
 const OVEN_NOTICE = "Easy-Off is used for deep oven cleaning. This product emits a strong odour. We recommend opening windows for ventilation during and after the service.";
 const LAUNDRY_NOTICE = "Client is responsible for sorting special care items (delicates, dry-clean-only, etc.) before the service and for putting laundry away after completion.";
 
-function buildLineItems(form: any, s: any) {
-  const items: { label: string; quantity: number; unitPrice: number; lineTotal: number; category: string }[] = [];
+const round2 = (n: number) => parseFloat(n.toFixed(2));
 
-  // 1. Base Fee — always $139
-  items.push({ label: "Base fee", quantity: 1, unitPrice: BASE_FEE, lineTotal: BASE_FEE, category: "base" });
+export interface ComputePricingInput {
+  serviceType: ServiceType | string;
+  squareFootage: number;
+  addons?: string[];
+  sessions?: number;
+  discountCode?: string | null;
+  welcomeEligible?: boolean; // true if this code is a welcome/15% promo
+  multiEligible?: boolean;   // true if sessions >= 2
+  settings?: any;            // optional: pricing_settings for addon prices
+}
 
-  // 2. Square footage
-  if (form.squareFootage > 0) {
-    const sqftTotal = parseFloat((form.squareFootage * SQFT_RATE).toFixed(2));
-    items.push({
-      label: `Square footage (${form.squareFootage} sq ft @ $${SQFT_RATE}/sq ft)`,
-      quantity: form.squareFootage,
-      unitPrice: SQFT_RATE,
-      lineTotal: sqftTotal,
+export interface PricingBreakdown {
+  serviceType: ServiceType;
+  minimum: number;
+  sqftRate: number;
+  sqftPrice: number;
+  basePrice: number;
+  discountablePortion: number;
+  discountPct: number;
+  discountLabel: string | null;
+  discount: number;
+  discountedBase: number;
+  addOnsTotal: number;
+  subtotal: number;
+  hst: number;
+  total: number;
+  lineItems: { label: string; quantity: number; unitPrice: number; lineTotal: number; category: string }[];
+}
+
+function resolveService(serviceType: string): ServiceType {
+  if (serviceType === "deep" || serviceType === "moveout" || serviceType === "standard") return serviceType;
+  return "standard";
+}
+
+export function computePricing(input: ComputePricingInput): PricingBreakdown {
+  const service = resolveService(input.serviceType);
+  const sqft = Math.max(0, Math.floor(input.squareFootage || 0));
+  const { minimum, sqftRate, label } = SERVICE_PRICING[service];
+  const s = input.settings || {};
+
+  const sqftPrice = round2(sqft * sqftRate);
+  const basePrice = Math.max(minimum, sqftPrice);
+
+  // Determine applicable discount (NON-STACKING — take the larger)
+  let discountPct = 0;
+  let discountLabel: string | null = null;
+  if (input.multiEligible && input.welcomeEligible) {
+    discountPct = Math.max(DISCOUNT_RATES.multi, DISCOUNT_RATES.welcome);
+    discountLabel = discountPct === DISCOUNT_RATES.multi ? "Multi-Booking (20%)" : "Welcome (15%)";
+  } else if (input.multiEligible) {
+    discountPct = DISCOUNT_RATES.multi;
+    discountLabel = "Multi-Booking (20%)";
+  } else if (input.welcomeEligible) {
+    discountPct = DISCOUNT_RATES.welcome;
+    discountLabel = "Welcome (15%)";
+  }
+
+  const discountablePortion = Math.max(0, round2(sqftPrice - minimum));
+  const discount = round2(discountablePortion * discountPct);
+  const discountedBase = round2(basePrice - discount);
+
+  // Add-ons (never discounted) — layer on top of basePrice
+  const addonCatalog: Record<string, { label: string; price: number; notice?: string }> = {
+    fridge:     { label: "Inside fridge",       price: typeof s.fridgePrice === "number" ? s.fridgePrice : 30 },
+    windows:    { label: "Interior windows",     price: typeof s.windowsPrice === "number" ? s.windowsPrice : 40 },
+    baseboards: { label: "Baseboards",           price: typeof s.baseboardsPrice === "number" ? s.baseboardsPrice : 35 },
+    grout:      { label: "Grout scrubbing",      price: typeof s.groutPrice === "number" ? s.groutPrice : 35 },
+    oven:       { label: "In-Oven Cleaning",     price: OVEN_PRICE, notice: OVEN_NOTICE },
+    laundry:    { label: "Laundry Wash & Fold",  price: LAUNDRY_PRICE, notice: LAUNDRY_NOTICE },
+  };
+  const addonLines: { label: string; quantity: number; unitPrice: number; lineTotal: number; category: string }[] = [];
+  for (const a of input.addons || []) {
+    const entry = addonCatalog[a];
+    if (!entry) continue;
+    addonLines.push({ label: entry.label, quantity: 1, unitPrice: entry.price, lineTotal: entry.price, category: "addon" });
+  }
+  const addOnsTotal = round2(addonLines.reduce((sum, i) => sum + i.lineTotal, 0));
+
+  const subtotal = round2(discountedBase + addOnsTotal);
+  const hst = round2(subtotal * HST_RATE);
+  const total = round2(subtotal + hst);
+
+  // Line items for UI / email rendering
+  const lineItems: { label: string; quantity: number; unitPrice: number; lineTotal: number; category: string }[] = [];
+  lineItems.push({
+    label: `${label} — base (minimum $${minimum.toFixed(2)})`,
+    quantity: 1,
+    unitPrice: minimum,
+    lineTotal: minimum,
+    category: "base",
+  });
+  if (sqftPrice > minimum) {
+    lineItems.push({
+      label: `Sqft upgrade (${sqft} sq ft @ $${sqftRate}/sq ft, above minimum)`,
+      quantity: sqft,
+      unitPrice: sqftRate,
+      lineTotal: round2(sqftPrice - minimum),
       category: "sqft",
     });
   }
+  lineItems.push(...addonLines);
 
-  // 3. Service type surcharges (client picks their package — no auto-upgrade)
-  if (form.serviceType === "deep") {
-    items.push({ label: "Deep clean surcharge", quantity: 1, unitPrice: s.deepCleanSurcharge, lineTotal: s.deepCleanSurcharge, category: "surcharge" });
-  } else if (form.serviceType === "moveout") {
-    items.push({ label: "Move-in/out surcharge", quantity: 1, unitPrice: s.moveoutSurcharge, lineTotal: s.moveoutSurcharge, category: "surcharge" });
-  }
-
-  // 4. Add-ons (standard only, except oven which is available for all packages)
-  const addonMap: Record<string, { label: string; price: number; notice?: string }> = {
-    fridge:     { label: "Inside fridge",     price: s.fridgePrice },
-    windows:    { label: "Interior windows",   price: s.windowsPrice },
-    baseboards: { label: "Baseboards",         price: s.baseboardsPrice },
-    grout:      { label: "Grout scrubbing",    price: s.groutPrice ?? 35 },
-    oven:       { label: "In-Oven Cleaning",   price: OVEN_PRICE, notice: OVEN_NOTICE },
-    laundry:    { label: "Laundry Wash & Fold", price: LAUNDRY_PRICE, notice: LAUNDRY_NOTICE },
+  return {
+    serviceType: service,
+    minimum,
+    sqftRate,
+    sqftPrice,
+    basePrice,
+    discountablePortion,
+    discountPct,
+    discountLabel,
+    discount,
+    discountedBase,
+    addOnsTotal,
+    subtotal,
+    hst,
+    total,
+    lineItems,
   };
-  for (const addon of form.addons || []) {
-    const a = addonMap[addon];
-    if (!a) continue;
-    // Oven and laundry add-ons are always available; other add-ons only for standard
-    if (addon !== "oven" && addon !== "laundry" && form.serviceType !== "standard") continue;
-    items.push({ label: a.label, quantity: 1, unitPrice: a.price, lineTotal: a.price, category: "addon" });
-  }
+}
 
-  return items;
+export function getContractorPayout(serviceType: string): number {
+  return CONTRACTOR_PAYOUT[resolveService(serviceType)];
 }
 
 // ── Email Template ────────────────────────────────────────────────────────────
@@ -567,45 +669,51 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         });
       }
 
-      // Pricing — Transparent itemized breakdown
-      const rawItems = buildLineItems(form, s);
-      const perSessionSubtotal = rawItems.reduce((sum, i) => sum + i.lineTotal, 0);
-
-      // Multi-session: multiply line items if booking 2+ sessions
+      // Pricing — new per-service engine (non-stacking discount, discount only on portion above minimum)
       const sessions = form.numberOfSessions ?? 1;
-      let subtotal = perSessionSubtotal;
-      if (sessions > 1) {
-        subtotal = parseFloat((perSessionSubtotal * sessions).toFixed(2));
-        rawItems.forEach(i => {
-          i.lineTotal = parseFloat((i.lineTotal * sessions).toFixed(2));
-          if (i.quantity !== 1) i.quantity = i.quantity * sessions;
-        });
-        rawItems.unshift({ label: `× ${sessions} cleaning sessions`, quantity: sessions, unitPrice: 0, lineTotal: 0, category: "sessions" });
-      }
+      const multiEligible = sessions >= 2;
 
-      // Multi-booking discount: 20% off for 2+ sessions
-      let multiDiscount = 0;
-      if (sessions >= 2) {
-        multiDiscount = parseFloat((subtotal * 0.20).toFixed(2));
-      }
-
-      // Promo code discount (applied after multi-booking discount)
-      let promoDiscount = 0;
+      // Validate promo code. A code is "welcome-eligible" if it exists, is active,
+      // and is a percent-type discount (we treat any active percent code as a welcome-style 15% promo).
+      let welcomeEligible = false;
       let usedPromo: string | null = null;
       if (form.promoCode) {
         const pc = await db.getPromoCode(form.promoCode);
         if (pc && pc.active) {
-          promoDiscount = pc.type === "percent"
-            ? parseFloat(((subtotal - multiDiscount) * pc.value / 100).toFixed(2))
-            : pc.value;
+          welcomeEligible = true;
           usedPromo = pc.code;
         }
       }
 
-      const discount = parseFloat((multiDiscount + promoDiscount).toFixed(2));
-      const afterDiscount = parseFloat((subtotal - discount).toFixed(2));
-      const tax = parseFloat((afterDiscount * HST_RATE).toFixed(2));
-      const total = parseFloat((afterDiscount + tax).toFixed(2));
+      const pricing = computePricing({
+        serviceType: form.serviceType,
+        squareFootage: form.squareFootage,
+        addons: form.addons || [],
+        sessions,
+        discountCode: usedPromo,
+        welcomeEligible,
+        multiEligible,
+        settings: s,
+      });
+
+      // Multiply by number of sessions (each session is its own clean at same price)
+      const perSessionSubtotal = pricing.subtotal;
+      const perSessionHst = pricing.hst;
+      const subtotal = round2(perSessionSubtotal * sessions);
+      const tax = round2(perSessionHst * sessions);
+      const afterDiscount = subtotal;
+      const discount = round2(pricing.discount * sessions);
+      const total = round2(subtotal + tax);
+
+      // Build line items scaled by sessions
+      const rawItems = pricing.lineItems.map(i => ({
+        ...i,
+        lineTotal: round2(i.lineTotal * sessions),
+        quantity: i.quantity === 1 ? 1 : i.quantity * sessions,
+      }));
+      if (sessions > 1) {
+        rawItems.unshift({ label: `× ${sessions} cleaning sessions`, quantity: sessions, unitPrice: 0, lineTotal: 0, category: "sessions" });
+      }
 
       // Combine entrance method into special notes for storage
       const notesWithEntrance = [form.specialNotes, form.entranceMethod ? `Entrance method: ${form.entranceMethod}` : ""].filter(Boolean).join("\n");
@@ -638,14 +746,20 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
       // Structured breakdown for UI
       const breakdown = {
-        baseFee:   BASE_FEE,
-        sqftRate:  SQFT_RATE,
-        sqftTotal: rawItems.find(i => i.category === "sqft")?.lineTotal ?? 0,
-        addons:    rawItems.filter(i => i.category === "addon").map(i => ({ label: i.label, amount: i.lineTotal })),
-        surcharge: rawItems.find(i => i.category === "surcharge")?.lineTotal ?? 0,
+        serviceType: pricing.serviceType,
+        minimum:     pricing.minimum,
+        sqftRate:    pricing.sqftRate,
+        sqftPrice:   round2(pricing.sqftPrice * sessions),
+        basePrice:   round2(pricing.basePrice * sessions),
+        discountablePortion: round2(pricing.discountablePortion * sessions),
+        discountPct: pricing.discountPct,
+        discountLabel: pricing.discountLabel,
+        discountedBase: round2(pricing.discountedBase * sessions),
+        addOnsTotal: round2(pricing.addOnsTotal * sessions),
+        addons:      rawItems.filter(i => i.category === "addon").map(i => ({ label: i.label, amount: i.lineTotal })),
         numberOfSessions: sessions,
-        multiDiscount,
-        promoDiscount,
+        multiDiscount: pricing.discountLabel === "Multi-Booking (20%)" ? discount : 0,
+        promoDiscount: pricing.discountLabel === "Welcome (15%)" ? discount : 0,
         subtotal,
         discount,
         afterDiscount,
@@ -1743,11 +1857,21 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
             .single();
 
           if (ctr?.stripe_account_id) {
-            // Determine payout amount from the job's pay_amount (stored in HS Supabase)
+            // Flat payout by service_type: $160 / $240 / $320
             let payAmount = 0;
+            let serviceType: string | null = null;
             if (hsSupa) {
-              const { data: jobData } = await hsSupa.from("jobs").select("pay_amount").eq("id", jobId).single();
-              if (jobData?.pay_amount) payAmount = Number(jobData.pay_amount);
+              const { data: jobData } = await hsSupa.from("jobs").select("service_type, pay_amount").eq("id", jobId).single();
+              if (jobData?.service_type) {
+                serviceType = jobData.service_type;
+                payAmount = getContractorPayout(jobData.service_type);
+              } else if (jobData?.pay_amount) {
+                payAmount = Number(jobData.pay_amount);
+              }
+              // Persist the flat payout on the job record so reporting is consistent
+              if (serviceType && payAmount > 0) {
+                await hsSupa.from("jobs").update({ pay_amount: payAmount }).eq("id", jobId);
+              }
             }
 
             if (payAmount > 0) {
