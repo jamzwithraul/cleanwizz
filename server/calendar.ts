@@ -53,9 +53,12 @@ export async function getAvailableSlots(): Promise<SlotInfo[]> {
 
   const now = new Date();
   const timeMin = new Date(now);
-  timeMin.setHours(timeMin.getHours() + 24); // earliest = tomorrow
+  timeMin.setHours(timeMin.getHours() + 48); // earliest bookable = 48 hours from now
   const timeMax = new Date(now);
   timeMax.setDate(timeMax.getDate() + DAYS_AHEAD);
+
+  // 48-hour buffer: any slot starting before this is unavailable.
+  const bufferCutoff = new Date(now.getTime() + 48 * 60 * 60 * 1000);
 
   // Fetch existing events to find busy times
   const eventsRes = await calendar.events.list({
@@ -99,8 +102,9 @@ export async function getAvailableSlots(): Promise<SlotInfo[]> {
         const slotStart = new Date(`${etYear}-${etMonth}-${etDay}T${hStr}:00:00-04:00`);
         const slotEnd   = new Date(`${etYear}-${etMonth}-${etDay}T${h2Str}:00:00-04:00`);
 
-        // Skip past slots
-        if (slotStart <= now) continue;
+        // Skip slots that fall inside the 48-hour booking buffer (covers both
+        // past slots and anything less than 48h from "now").
+        if (slotStart <= bufferCutoff) continue;
 
         // Skip Sundays (check ET day of week)
         const etDow = slotStart.toLocaleDateString("en-CA", { timeZone: "America/Toronto", weekday: "short" });
