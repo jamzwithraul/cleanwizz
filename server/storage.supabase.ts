@@ -80,6 +80,7 @@ export interface IStorageAsync {
   }): Promise<EmailSignup>;
   getEmailSignup(id: string): Promise<EmailSignup | undefined>;
   hasEmailSignup(email: string): Promise<boolean>;
+  hasRecentEmailSignup(email: string, sinceIso: string, excludeId?: string): Promise<boolean>;
 }
 
 // ── Row types returned by Supabase (snake_case) ───────────────────────────────
@@ -532,6 +533,18 @@ export function createSupabaseStorage(): IStorageAsync {
         .eq("email", email.toLowerCase().trim())
         .limit(1);
       if (result.error) throw new Error(`[Supabase/hasEmailSignup] ${result.error.message}`);
+      return (result.data?.length ?? 0) > 0;
+    },
+
+    async hasRecentEmailSignup(email: string, sinceIso: string, excludeId?: string): Promise<boolean> {
+      let query = supabase
+        .from("email_signups")
+        .select("id")
+        .eq("email", email.toLowerCase().trim())
+        .gte("consent_at", sinceIso);
+      if (excludeId) query = query.neq("id", excludeId);
+      const result = await query.limit(1);
+      if (result.error) throw new Error(`[Supabase/hasRecentEmailSignup] ${result.error.message}`);
       return (result.data?.length ?? 0) > 0;
     },
 

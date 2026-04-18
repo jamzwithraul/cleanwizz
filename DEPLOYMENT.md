@@ -32,6 +32,11 @@ SUPABASE_ANON_KEY=eyJ...           # optional, for future client-side use
 RESEND_API_KEY=re_xxxxxxxxxxxx
 FROM_EMAIL=quotes@yourcleaningbusiness.ca
 BASE_URL=https://your-backend-url.com
+
+# Thank-you email (post-signup). Defaults shown — override if your sending
+# domain differs. Requires the sending domain to be verified in Resend.
+EMAIL_FROM_ADDRESS=noreply@harryspottercleaning.ca
+EMAIL_FROM_NAME=Harry's Potter Cleaning
 ```
 
 > ⚠️ **Never expose `SUPABASE_SERVICE_ROLE_KEY` in the browser or frontend.**

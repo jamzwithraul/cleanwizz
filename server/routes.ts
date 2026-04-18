@@ -8,6 +8,7 @@ import { quoteFormSchema, emailSignupRequestSchema } from "@shared/schema";
 import { getAvailableSlots, bookSlot, type SlotInfo } from "./calendar";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
+import { sendThankYouEmail } from "./emails/thankYouEmail";
 
 // ── Harry Spotter Supabase (contractor data) ──────────────────────────────────
 const HS_SUPABASE_URL  = process.env.HS_SUPABASE_URL  || "https://gjfeqnfmwbsfwnbepwvu.supabase.co";
@@ -614,7 +615,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         null;
       const ua = (req.headers["user-agent"] as string) || null;
 
-      const row = await getStorage().createEmailSignup({
+      const db = getStorage();
+      const row = await db.createEmailSignup({
         email: parsed.email,
         source: parsed.source,
         consentText: parsed.consentText,
@@ -623,6 +625,33 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         bookingId: parsed.bookingId ?? null,
       });
       res.status(201).json({ id: row.id });
+
+      // Fire-and-forget thank-you email. Dedupe: skip if this email has another
+      // signup in the last 24h so repeated consent submissions don't spam.
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      db.hasRecentEmailSignup(row.email, since, row.id)
+        .then(async (isDuplicate) => {
+          if (isDuplicate) {
+            console.log(
+              `[thank-you-email] skipping duplicate signup=${row.id} email=${row.email} (prior signup within 24h)`,
+            );
+            return;
+          }
+          await sendThankYouEmail(
+            {
+              resend,
+              fromAddress: process.env.EMAIL_FROM_ADDRESS,
+              fromName: process.env.EMAIL_FROM_NAME,
+            },
+            { to: row.email, signupId: row.id },
+          );
+        })
+        .catch((err) => {
+          console.error(
+            `[thank-you-email] background task failed signup=${row.id}`,
+            err,
+          );
+        });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }
