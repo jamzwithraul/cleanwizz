@@ -8,6 +8,9 @@ import { quoteFormSchema, emailSignupRequestSchema } from "@shared/schema";
 import { getAvailableSlots, bookSlot, type SlotInfo } from "./calendar";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
+import { requireAuth, requireAuthOrInternal, ipRateLimit } from "./middleware/requireAuth";
+import { validateBookingSlots, generateBookingReference, type SlotInput } from "./booking";
+import { buildPayoutRecord } from "./payouts";
 
 // ── Harry Spotter Supabase (contractor data) ──────────────────────────────────
 const HS_SUPABASE_URL  = process.env.HS_SUPABASE_URL  || "https://gjfeqnfmwbsfwnbepwvu.supabase.co";
@@ -532,7 +535,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
   });
 
-  app.put("/api/settings", async (req, res) => {
+  app.put("/api/settings", requireAuth, async (req, res) => {
     try {
       const s = await getStorage().upsertSettings(req.body);
       res.json(s);
@@ -565,7 +568,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
   });
 
-  app.post("/api/promo-codes", async (req, res) => {
+  app.post("/api/promo-codes", requireAuth, async (req, res) => {
     try {
       const { code, type, value, active, validFrom, validTo } = req.body;
       const pc = await getStorage().createPromoCode({
@@ -604,7 +607,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   // ── Email Signups (CASL consent audit) ─────────────────────────────────────
   // Append-only log — records every time a user ticks a consent checkbox or
   // submits the promo popup. Captures IP + UA from the request.
-  app.post("/api/email-signups", async (req, res) => {
+  // Public by design (anonymous signup). Rate-limit by IP (50/min).
+  // TODO: swap the in-memory counter for Redis before we scale out horizontally.
+  app.post("/api/email-signups", ipRateLimit({ max: 50, windowMs: 60_000 }), async (req, res) => {
     try {
       const parsed = emailSignupRequestSchema.parse(req.body);
       const ip =
@@ -980,15 +985,26 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   });
 
   // POST /api/payment/intent — create a Stripe PaymentIntent for a quote
+  // Public by design — anonymous clients submit quotes before creating an account.
+  // Instead of JWT auth, we check the supplied `customerEmail` matches the quote's
+  // client email: a quote-ownership guard that stops a leaked quoteId from being
+  // weaponised against a different client's email.
   app.post("/api/payment/intent", async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Payments not configured." });
-      const { quoteId } = req.body;
+      const { quoteId, customerEmail } = req.body;
       if (!quoteId) return res.status(400).json({ error: "quoteId required." });
 
       const db = getStorage();
       const q  = await db.getQuote(quoteId);
       if (!q) return res.status(404).json({ error: "Quote not found." });
+
+      if (customerEmail) {
+        const client = await db.getClient(q.clientId);
+        if (!client || client.email.toLowerCase() !== String(customerEmail).toLowerCase()) {
+          return res.status(403).json({ error: "Quote does not belong to this email." });
+        }
+      }
 
       const total = q.total;
       const amountCents = Math.round(total * 100);
@@ -1008,11 +1024,16 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   });
 
   // POST /api/booking/book — client books a slot for a quote
-  app.post("/api/booking/book", async (req, res) => {
+  app.post("/api/booking/book", requireAuth, async (req, res) => {
     try {
       const { quoteId, start, end, paymentIntentId } = req.body;
-      if (!quoteId || !start || !end) {
-        return res.status(400).json({ error: "quoteId, start, and end are required." });
+      const bodySlots = Array.isArray(req.body?.slots) ? (req.body.slots as SlotInput[]) : null;
+      const slotInputs: SlotInput[] = bodySlots && bodySlots.length > 0
+        ? bodySlots
+        : (start && end ? [{ start, end }] : []);
+
+      if (!quoteId || slotInputs.length === 0) {
+        return res.status(400).json({ error: "quoteId and at least one slot (slots[] or start/end) are required." });
       }
 
       const db     = getStorage();
@@ -1021,18 +1042,100 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       const client = await db.getClient(q.clientId);
       if (!client) return res.status(404).json({ error: "Client not found." });
 
-      // Create Google Calendar event
-      const eventLink = await bookSlot({
-        start,
-        end,
-        clientName:    client.name,
-        clientEmail:   client.email,
-        clientPhone:   client.phone || "",
-        clientAddress: client.address || "",
-        serviceType: q.propertyType,
-        total:         q.total,
-        quoteId:       q.id,
-      });
+      // ── Fix 4: re-validate 48h buffer + slot availability against the live
+      // Google Calendar feed. Client-side checks are not trusted.
+      const validation = await validateBookingSlots(slotInputs);
+      if (!validation.ok) {
+        const err = validation.err;
+        if (err.kind === "buffer_violation") {
+          return res.status(400).json({ error: "buffer_violation", detail: err.reason, slot: err.slot });
+        }
+        if (err.kind === "slot_unavailable") {
+          return res.status(409).json({ error: "slot_unavailable", detail: err.reason, slot: err.slot });
+        }
+        return res.status(400).json({ error: err.kind, detail: err.reason });
+      }
+      const validSlots = validation.slots;
+
+      // Create one Google Calendar event per slot.
+      const calendarResults: Array<{ start: string; end: string; eventLink: string }> = [];
+      for (const s of validSlots) {
+        const link = await bookSlot({
+          start:         s.start,
+          end:           s.end,
+          clientName:    client.name,
+          clientEmail:   client.email,
+          clientPhone:   client.phone || "",
+          clientAddress: client.address || "",
+          serviceType:   q.propertyType,
+          total:         q.total,
+          quoteId:       q.id,
+        });
+        calendarResults.push({ start: s.start, end: s.end, eventLink: link });
+      }
+
+      // ── Fix 5: write a row per slot to the Supabase jobs table + generate
+      // a booking reference code. Without this, the contractor pipeline never
+      // starts and the calendar UI keeps offering the same slot.
+      const bookingRef = generateBookingReference();
+      const jobIds: string[] = [];
+      if (hsSupa) {
+        let serviceTypeForJob: string = "standard";
+        try {
+          const sArr = JSON.parse(q.services || "[]");
+          if (Array.isArray(sArr) && typeof sArr[0] === "string") serviceTypeForJob = sArr[0];
+        } catch {}
+        const flatPayout = getContractorPayout(serviceTypeForJob);
+        for (let i = 0; i < validSlots.length; i++) {
+          const s = validSlots[i];
+          const eventLink = calendarResults[i]?.eventLink || "";
+          const notes = [
+            `Booking ref: ${bookingRef}${validSlots.length > 1 ? ` (session ${i + 1}/${validSlots.length})` : ""}`,
+            `Quote: ${q.id}`,
+            client.email ? `Client email: ${client.email}` : "",
+            client.phone ? `Phone: ${client.phone}` : "",
+            q.squareFootage ? `Sqft: ${q.squareFootage}` : "",
+            eventLink ? `Calendar: ${eventLink}` : "",
+          ].filter(Boolean).join("\n");
+          const { data: jobRow, error: jobErr } = await hsSupa.from("jobs").insert({
+            client_name:     client.name,
+            client_address:  client.address || "",
+            city:            (client as any).city || "",
+            service_type:    serviceTypeForJob,
+            scheduled_start: s.start,
+            scheduled_end:   s.end,
+            pay_amount:      flatPayout,
+            notes,
+            status:          "open",
+            quote_id:        q.id,
+          }).select("id").single();
+          if (jobErr) {
+            console.error("[booking] Failed to insert job row:", jobErr.message);
+          } else if (jobRow?.id) {
+            jobIds.push(jobRow.id);
+          }
+        }
+
+        // Kick off the notify-contractors chain for the first job (fan-out
+        // handled server-side; idempotent by (job_id, contractor_id) unique).
+        if (jobIds.length > 0 && process.env.SUPABASE_FUNCTIONS_URL && process.env.INTERNAL_SERVICE_SECRET) {
+          try {
+            await fetch(`${process.env.SUPABASE_FUNCTIONS_URL}/notify-contractors`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET,
+              },
+              body: JSON.stringify({ jobId: jobIds[0] }),
+            });
+          } catch (e) {
+            console.error("[booking] notify-contractors kickoff failed:", e);
+          }
+        }
+      }
+
+      const primarySlot = validSlots[0];
+      const eventLink = calendarResults[0]?.eventLink || "";
 
             // Update to accepted, store Stripe PaymentIntent ID, and fire cascade
       await db.updateQuoteStatus(q.id, "accepted", { paymentIntentId: paymentIntentId || null });
@@ -1043,7 +1146,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       // Notify owner
       if (resend) {
         const items = await db.getQuoteItems(q.id);
-        const slotLabel = new Date(start).toLocaleString("en-CA", {
+        const slotLabel = new Date(primarySlot.start).toLocaleString("en-CA", {
           timeZone: "America/Toronto",
           weekday: "long", month: "long", day: "numeric",
           hour: "numeric", minute: "2-digit", hour12: true,
@@ -1186,7 +1289,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     <div style="padding:20px 40px;background:linear-gradient(135deg,#4a0f1c,#3d0c16);border-top:3px solid #f9bc15;text-align:center;">
       <p style="color:#fde68a;font-size:13px;font-weight:600;margin:0 0 4px;">Harry Spotter Cleaning Co.</p>
       <p style="color:#c4a87a;font-size:12px;margin:0 0 4px;">Ottawa, Ontario &middot; harryspottercleaning.ca</p>
-      <p style="color:#8a6a50;font-size:11px;margin:0;">Booking Reference: ${q.id.slice(0, 8)}</p>
+      <p style="color:#8a6a50;font-size:11px;margin:0;">Booking Reference: ${bookingRef}</p>
     </div>
 
   </div>
@@ -1195,7 +1298,20 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         }).catch(e => console.error("[booking] Client confirm email failed:", e));
       }
 
-      res.json({ success: true, eventLink });
+      res.json({
+        success: true,
+        bookingReference: bookingRef,
+        eventLink,
+        slots: validSlots.map((s, i) => ({
+          start:     s.start,
+          end:       s.end,
+          label:     s.label,
+          eventLink: calendarResults[i]?.eventLink || "",
+          jobId:     jobIds[i] || null,
+        })),
+        total: q.total,
+        serviceType: q.propertyType,
+      });
     } catch (err: any) {
       console.error("[booking] Failed to book slot:", err.message);
       res.status(500).json({ error: err.message });
@@ -1370,36 +1486,59 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   // Stripe Connect — Contractor payout onboarding
   // ══════════════════════════════════════════════════════════════════════════════
 
-  // POST /api/stripe/connect/create — Create a Stripe Connect account for a contractor
-  app.post("/api/stripe/connect/create", async (req, res) => {
+  // POST /api/stripe/connect/create — Create a Stripe Connect account for the
+  // authenticated contractor. Never trusts a client-supplied contractorId —
+  // the contractor row is resolved from req.user.email (Supabase JWT).
+  app.post("/api/stripe/connect/create", requireAuth, async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
-      const { contractorId, email, fullName } = req.body;
-      if (!contractorId || !email) return res.status(400).json({ error: "contractorId and email required" });
+      if (!hsSupa) return res.status(503).json({ error: "Supabase not configured" });
+      const callerEmail = req.user!.email.toLowerCase();
 
-      // Create a Stripe Connect Express account
+      const { data: contractor, error: cErr } = await hsSupa
+        .from("contractor_applications")
+        .select("id, full_name, email, stripe_account_id")
+        .ilike("email", callerEmail)
+        .maybeSingle();
+      if (cErr) return res.status(500).json({ error: cErr.message });
+      if (!contractor) return res.status(403).json({ error: "No contractor application for this user" });
+
+      // If a Stripe account already exists for this contractor, reuse it —
+      // never create a second one on retry.
+      if (contractor.stripe_account_id) {
+        return res.json({ accountId: contractor.stripe_account_id, reused: true });
+      }
+
+      const fullName = contractor.full_name || "";
       const account = await stripe.accounts.create({
         type: "express",
         country: "CA",
-        email,
+        email: contractor.email,
         business_type: "individual",
         individual: {
-          first_name: fullName?.split(" ")[0] || "",
-          last_name: fullName?.split(" ").slice(1).join(" ") || "",
-          email,
+          first_name: fullName.split(" ")[0] || "",
+          last_name:  fullName.split(" ").slice(1).join(" ") || "",
+          email:      contractor.email,
         },
         capabilities: {
           card_payments: { requested: false },
-          transfers: { requested: true },
+          transfers:     { requested: true },
         },
         business_profile: {
-          mcc: "7349", // cleaning services
+          mcc: "7349",
           product_description: "Residential cleaning services for Harry Spotter Cleaning Co.",
         },
-        metadata: { contractorId },
+        metadata: { contractorId: contractor.id },
       });
 
-      console.log(`[stripe-connect] Created account ${account.id} for contractor ${contractorId}`);
+      // Server is the only writer of stripe_account_id — the client no longer
+      // writes this column directly from PayoutSetup.tsx.
+      await hsSupa
+        .from("contractor_applications")
+        .update({ stripe_account_id: account.id })
+        .eq("id", contractor.id);
+
+      console.log(`[stripe-connect] Created account ${account.id} for contractor ${contractor.id}`);
       res.json({ accountId: account.id });
     } catch (err: any) {
       console.error("[stripe-connect] Create error:", err.message);
@@ -1407,18 +1546,30 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
   });
 
-  // POST /api/stripe/connect/onboard-link — Get a Stripe onboarding link
-  app.post("/api/stripe/connect/onboard-link", async (req, res) => {
+  // POST /api/stripe/connect/onboard-link — Get a Stripe onboarding link.
+  // Always resolves the accountId from the caller's contractor row — never
+  // from the request body.
+  app.post("/api/stripe/connect/onboard-link", requireAuth, async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
-      const { accountId, contractorId } = req.body;
-      if (!accountId) return res.status(400).json({ error: "accountId required" });
+      if (!hsSupa) return res.status(503).json({ error: "Supabase not configured" });
+      const callerEmail = req.user!.email.toLowerCase();
 
-      const returnUrl = `https://harryspottercleaning.ca/contractor?stripe=complete&cid=${contractorId || ""}`;
-      const refreshUrl = `https://harryspottercleaning.ca/contractor?stripe=refresh&cid=${contractorId || ""}`;
+      const { data: contractor, error: cErr } = await hsSupa
+        .from("contractor_applications")
+        .select("id, stripe_account_id")
+        .ilike("email", callerEmail)
+        .maybeSingle();
+      if (cErr) return res.status(500).json({ error: cErr.message });
+      if (!contractor || !contractor.stripe_account_id) {
+        return res.status(400).json({ error: "No Stripe account for this contractor" });
+      }
+
+      const returnUrl  = `https://harryspottercleaning.ca/contractor?stripe=complete&cid=${contractor.id}`;
+      const refreshUrl = `https://harryspottercleaning.ca/contractor?stripe=refresh&cid=${contractor.id}`;
 
       const link = await stripe.accountLinks.create({
-        account: accountId,
+        account: contractor.stripe_account_id,
         refresh_url: refreshUrl,
         return_url: returnUrl,
         type: "account_onboarding",
@@ -1459,7 +1610,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
   // POST /api/identity/create-session — Create a Stripe Identity VerificationSession
   // Returns the hosted verification URL the contractor is redirected to.
-  app.post("/api/identity/create-session", async (req, res) => {
+  app.post("/api/identity/create-session", requireAuth, async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
       if (!hsSupa) return res.status(503).json({ error: "Supabase not configured" });
@@ -1572,7 +1723,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   // POST /api/identity/check-prc-name — Fuzzy-match contractor-provided PRC name vs Stripe-verified name
   // Called by the frontend right after the PRC file is uploaded.
   // Writes prc_name_match + prc_name_match_score. Does NOT block — admin reviews mismatches.
-  app.post("/api/identity/check-prc-name", async (req, res) => {
+  app.post("/api/identity/check-prc-name", requireAuth, async (req, res) => {
     try {
       if (!hsSupa) return res.status(503).json({ error: "Supabase not configured" });
       const { contractorId, prcName } = req.body || {};
@@ -1621,7 +1772,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
   // POST /api/identity/sync/:contractorId — Manually pull latest verification state from Stripe
   // Use this if a webhook is missed/failed. Idempotent — safe to call repeatedly.
-  app.post("/api/identity/sync/:contractorId", async (req, res) => {
+  app.post("/api/identity/sync/:contractorId", requireAuth, async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
       if (!hsSupa) return res.status(503).json({ error: "Supabase not configured" });
@@ -1884,7 +2035,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   //   3. Send thank-you email to client
   //   4. If client hasn't booked another job → generate 7-day discount code & include
   // ══════════════════════════════════════════════════════════════════════════════
-  app.post("/api/job/complete", async (req, res) => {
+  // Accept either a valid Supabase JWT OR an X-Internal-Secret header for
+  // server-to-server calls from the Supabase `complete-job` Edge Function.
+  app.post("/api/job/complete", requireAuthOrInternal, async (req, res) => {
     try {
       const { jobId, contractorId } = req.body;
       if (!jobId) return res.status(400).json({ error: "jobId is required." });
@@ -1922,50 +2075,82 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         }
       }
 
-      // ── Step 3: Payment already captured at booking. Transfer payout to contractor. ──
+      // ── Step 3: Payment already captured at booking. Transfer payout to
+      // contractor via Stripe Connect. This is the ONLY place payouts are
+      // created — the Supabase Edge Function `process-payouts` no longer
+      // invents `sent` rows without a real Stripe transfer.
       let transferResult: any = null;
+      let payoutStatus: "sent" | "failed" | "skipped" = "skipped";
+      let payoutError: string | null = null;
+      let payAmount = 0;
       if (stripe && contractorId && hsSupa) {
-        try {
-          // Look up contractor's Stripe Connect account
-          const { data: ctr } = await hsSupa
-            .from("contractor_applications")
-            .select("stripe_account_id, pay_amount")
-            .eq("id", contractorId)
-            .single();
+        const { data: ctr } = await hsSupa
+          .from("contractor_applications")
+          .select("stripe_account_id, pay_amount")
+          .eq("id", contractorId)
+          .single();
 
-          if (ctr?.stripe_account_id) {
-            // Flat payout by service_type: $160 / $240 / $320
-            let payAmount = 0;
-            let serviceType: string | null = null;
-            if (hsSupa) {
-              const { data: jobData } = await hsSupa.from("jobs").select("service_type, pay_amount").eq("id", jobId).single();
-              if (jobData?.service_type) {
-                serviceType = jobData.service_type;
-                payAmount = getContractorPayout(jobData.service_type);
-              } else if (jobData?.pay_amount) {
-                payAmount = Number(jobData.pay_amount);
-              }
-              // Persist the flat payout on the job record so reporting is consistent
-              if (serviceType && payAmount > 0) {
-                await hsSupa.from("jobs").update({ pay_amount: payAmount }).eq("id", jobId);
-              }
-            }
+        let serviceType: string | null = null;
+        const { data: jobData } = await hsSupa.from("jobs").select("service_type, pay_amount").eq("id", jobId).single();
+        if (jobData?.service_type) {
+          serviceType = jobData.service_type;
+          payAmount = getContractorPayout(jobData.service_type);
+        } else if (jobData?.pay_amount) {
+          payAmount = Number(jobData.pay_amount);
+        }
+        if (serviceType && payAmount > 0) {
+          await hsSupa.from("jobs").update({ pay_amount: payAmount }).eq("id", jobId);
+        }
 
-            if (payAmount > 0) {
-              transferResult = await stripe.transfers.create({
-                amount: Math.round(payAmount * 100), // cents
-                currency: "cad",
-                destination: ctr.stripe_account_id,
-                description: `Payout for job ${jobId.slice(0, 8)}`,
-                metadata: { jobId, contractorId },
-              });
-              console.log(`[job-complete] Transferred $${payAmount.toFixed(2)} to ${ctr.stripe_account_id}`);
-            }
-          } else {
-            console.log(`[job-complete] Contractor ${contractorId} has no Stripe Connect account. Manual payout needed.`);
+        if (ctr?.stripe_account_id && payAmount > 0) {
+          try {
+            transferResult = await stripe.transfers.create({
+              amount: Math.round(payAmount * 100), // cents
+              currency: "cad",
+              destination: ctr.stripe_account_id,
+              description: `Payout for job ${jobId.slice(0, 8)}`,
+              metadata: { jobId, contractorId },
+            });
+            payoutStatus = "sent";
+            console.log(`[job-complete] Transferred $${payAmount.toFixed(2)} to ${ctr.stripe_account_id}`);
+          } catch (transferErr: any) {
+            payoutStatus = "failed";
+            payoutError = transferErr?.message || String(transferErr);
+            console.error(`[job-complete] Transfer error: ${payoutError}`);
           }
-        } catch (transferErr: any) {
-          console.error(`[job-complete] Transfer error: ${transferErr.message}`);
+        } else {
+          payoutError = !ctr?.stripe_account_id
+            ? "No Stripe Connect account"
+            : "No pay_amount resolved";
+          console.log(`[job-complete] Skipped Stripe transfer: ${payoutError}`);
+        }
+
+        // Record the result in the payouts table. Never mark `sent` without
+        // a real Stripe transfer response.
+        if (payoutStatus === "sent" && transferResult) {
+          await hsSupa.from("payouts").upsert(
+            buildPayoutRecord({
+              jobId,
+              contractorId,
+              amount: payAmount,
+              now,
+              transferId: transferResult.id,
+              error: null,
+            }),
+            { onConflict: "job_id" } as any,
+          );
+        } else if (payoutStatus === "failed") {
+          await hsSupa.from("payouts").upsert(
+            buildPayoutRecord({
+              jobId,
+              contractorId,
+              amount: payAmount,
+              now,
+              transferId: null,
+              error: payoutError,
+            }),
+            { onConflict: "job_id" } as any,
+          );
         }
       }
 
@@ -2111,6 +2296,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         success: true,
         jobId,
         captured: true,
+        payoutStatus,
+        payoutError,
+        transferId: transferResult?.id || null,
         emailSent: !!(resend && clientEmail),
         discountCode: discountCode || null,
         isReturning,
