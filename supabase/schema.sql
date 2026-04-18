@@ -79,6 +79,24 @@ create table if not exists settings (
   updated_at            timestamptz not null default now()
 );
 
+-- ── email_signups ─────────────────────────────────────────────
+-- CASL / PIPEDA consent audit log for email-gated discounts.
+-- Append-only: multiple rows per email allowed (one per consent event).
+create table if not exists email_signups (
+  id            uuid primary key default gen_random_uuid(),
+  email         text not null,
+  source        text not null check (source in ('inline_checkbox', 'promo_popup')),
+  consent_text  text not null,
+  consent_at    timestamptz not null default now(),
+  ip_address    text,
+  user_agent    text,
+  booking_id    text references quotes(id) on delete set null
+);
+
+create index if not exists email_signups_email_idx       on email_signups(email);
+create index if not exists email_signups_consent_at_idx  on email_signups(consent_at desc);
+create index if not exists email_signups_booking_id_idx  on email_signups(booking_id);
+
 -- ── Row Level Security ────────────────────────────────────────
 -- The backend uses the SERVICE ROLE key, so RLS is bypassed for
 -- all server-side calls.  Enable RLS anyway so anon/public keys
@@ -88,6 +106,7 @@ alter table quotes        enable row level security;
 alter table quote_items   enable row level security;
 alter table promo_codes   enable row level security;
 alter table settings      enable row level security;
+alter table email_signups enable row level security;
 
 -- Service-role always bypasses RLS; no explicit policy needed.
 -- If you ever want authenticated users to query their own data,

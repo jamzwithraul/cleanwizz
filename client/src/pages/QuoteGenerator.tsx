@@ -29,6 +29,14 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import {
   User,
@@ -39,7 +47,15 @@ import {
   Loader2,
   CheckCircle2,
   ChevronRight,
+  Lock,
+  Mail,
 } from "lucide-react";
+
+// ── CASL consent copy (keep in sync with server default) ─────────────────────
+export const INLINE_CONSENT_TEXT =
+  "Email me promotional offers from Harry Spotter Cleaning Co. Unsubscribe anytime.";
+export const POPUP_CONSENT_TEXT =
+  "By submitting, you agree to receive promotional emails from Harry Spotter Cleaning Co. Unsubscribe anytime.";
 
 const SERVICE_OPTIONS = [
   {
@@ -128,6 +144,19 @@ export default function QuoteGenerator() {
   const [promoInput, setPromoInput] = useState("");
   const [promoLoading, setPromoLoading] = useState(false);
 
+  // ── CASL email-marketing consent (session-scoped gate for ALL discounts) ──
+  const [consentChecked, setConsentChecked]   = useState(false);
+  const [consentEmail, setConsentEmail]       = useState("");
+  const [consentSubmitting, setConsentSubmitting] = useState(false);
+  const [emailConsentGranted, setEmailConsentGranted] = useState(false);
+  const [emailConsentId, setEmailConsentId]   = useState<string | null>(null);
+  const [emailConsentSource, setEmailConsentSource] =
+    useState<"inline_checkbox" | "promo_popup" | null>(null);
+  const [emailConsentText, setEmailConsentText]   = useState<string | null>(null);
+  const [promoOpen, setPromoOpen]             = useState(false);
+  const [popupEmail, setPopupEmail]           = useState("");
+  const [popupSubmitting, setPopupSubmitting] = useState(false);
+
   const { data: settings } = useQuery<Settings>({
     queryKey: ["/api/settings"],
   });
@@ -164,13 +193,76 @@ export default function QuoteGenerator() {
 
   const { items, subtotal } = useLivePrice(values, settings);
 
-  let discount = 0;
-  if (promoApplied) {
-    discount = promoApplied.type === "percent"
-      ? parseFloat((subtotal * promoApplied.value / 100).toFixed(2))
-      : promoApplied.value;
-  }
+  // Raw discounts (computed exactly as before — pricing math is unchanged).
+  const promoDiscountRaw = promoApplied
+    ? (promoApplied.type === "percent"
+        ? parseFloat((subtotal * promoApplied.value / 100).toFixed(2))
+        : promoApplied.value)
+    : 0;
+
+  // All discounts are CASL-gated: zero them out until the user has consented.
+  const discount = emailConsentGranted ? promoDiscountRaw : 0;
+  const discountLocked = !emailConsentGranted && promoDiscountRaw > 0;
   const total = parseFloat((subtotal - discount).toFixed(2));
+
+  const submitConsent = async (
+    email: string,
+    source: "inline_checkbox" | "promo_popup",
+    consentText: string,
+  ) => {
+    const res = await apiRequest("POST", "/api/email-signups", {
+      email: email.trim(),
+      source,
+      consentText,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: "Signup failed" }));
+      throw new Error(err.error || "Signup failed");
+    }
+    const data = await res.json();
+    setEmailConsentGranted(true);
+    setEmailConsentId(data.id ?? null);
+    setEmailConsentSource(source);
+    setEmailConsentText(consentText);
+    // Mirror into the quote form's email field so the server-side
+    // consent-email check lines up.
+    if (!form.getValues("email")) form.setValue("email", email.trim());
+  };
+
+  const handleInlineUnlock = async () => {
+    if (!consentChecked) {
+      toast({ title: "Please tick the consent box first", variant: "destructive" });
+      return;
+    }
+    if (!consentEmail.trim()) {
+      toast({ title: "Email required", variant: "destructive" });
+      return;
+    }
+    setConsentSubmitting(true);
+    try {
+      await submitConsent(consentEmail, "inline_checkbox", INLINE_CONSENT_TEXT);
+      toast({ title: "Signed up!", description: "Discounts unlocked for this quote." });
+    } catch (e: any) {
+      toast({ title: "Could not sign up", description: e.message, variant: "destructive" });
+    } finally {
+      setConsentSubmitting(false);
+    }
+  };
+
+  const handlePopupSubmit = async () => {
+    if (!popupEmail.trim()) return;
+    setPopupSubmitting(true);
+    try {
+      await submitConsent(popupEmail, "promo_popup", POPUP_CONSENT_TEXT);
+      setPromoOpen(false);
+      setPopupEmail("");
+      toast({ title: "Signed up!", description: "Discounts unlocked for this quote." });
+    } catch (e: any) {
+      toast({ title: "Could not sign up", description: e.message, variant: "destructive" });
+    } finally {
+      setPopupSubmitting(false);
+    }
+  };
 
   const applyPromo = async () => {
     if (!promoInput.trim()) return;
@@ -194,7 +286,14 @@ export default function QuoteGenerator() {
 
   const createQuote = useMutation({
     mutationFn: async (data: QuoteFormValues) => {
-      const res = await apiRequest("POST", "/api/quotes", data);
+      const payload = {
+        ...data,
+        emailConsent: emailConsentGranted,
+        emailConsentId: emailConsentId,
+        emailConsentSource: emailConsentSource,
+        emailConsentText: emailConsentText,
+      };
+      const res = await apiRequest("POST", "/api/quotes", payload);
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.error || "Failed to create quote");
@@ -501,15 +600,15 @@ export default function QuoteGenerator() {
                 </CardContent>
               </Card>
 
-              {/* Promo Code */}
+              {/* Promo Code + Discount Signup */}
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base flex items-center gap-2">
                     <Tag size={16} className="text-primary" />
-                    Promo Code
+                    Promo Code &amp; Discounts
                   </CardTitle>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-4">
                   {promoApplied ? (
                     <div className="flex items-center gap-3">
                       <CheckCircle2 size={18} className="text-green-600" />
@@ -545,6 +644,62 @@ export default function QuoteGenerator() {
                       >
                         {promoLoading ? <Loader2 size={14} className="animate-spin" /> : "Apply"}
                       </Button>
+                    </div>
+                  )}
+
+                  <Separator />
+
+                  {/* Inline CASL consent — gates ALL discounts (A) */}
+                  {emailConsentGranted ? (
+                    <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-400" data-testid="consent-granted">
+                      <CheckCircle2 size={16} />
+                      <span>&#10003; Signed up &mdash; discounts active</span>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <label className="flex items-start gap-3 cursor-pointer">
+                        <Checkbox
+                          data-testid="checkbox-consent"
+                          checked={consentChecked}
+                          onCheckedChange={c => setConsentChecked(c === true)}
+                        />
+                        <span className="text-sm leading-relaxed">
+                          {INLINE_CONSENT_TEXT}
+                        </span>
+                      </label>
+
+                      <div className="flex gap-2">
+                        <Input
+                          data-testid="input-consent-email"
+                          type="email"
+                          placeholder="you@email.com"
+                          value={consentEmail}
+                          onChange={e => setConsentEmail(e.target.value)}
+                          disabled={!consentChecked}
+                        />
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={handleInlineUnlock}
+                          disabled={!consentChecked || !consentEmail.trim() || consentSubmitting}
+                          data-testid="button-unlock-discount"
+                        >
+                          {consentSubmitting ? <Loader2 size={14} className="animate-spin" /> : "Unlock discount"}
+                        </Button>
+                      </div>
+
+                      <div className="pt-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="px-0 h-auto text-primary hover:underline"
+                          onClick={() => setPromoOpen(true)}
+                          data-testid="button-open-promo-popup"
+                        >
+                          Get 15% off &mdash; sign up here
+                        </Button>
+                      </div>
                     </div>
                   )}
                 </CardContent>
@@ -587,6 +742,17 @@ export default function QuoteGenerator() {
                           </div>
                         )}
 
+                        {discountLocked && (
+                          <div className="flex justify-between text-sm opacity-60" data-testid="discount-locked">
+                            <span className="flex items-center gap-1 text-muted-foreground line-through">
+                              <Lock size={12} /> Discount
+                            </span>
+                            <span className="text-muted-foreground text-xs font-normal">
+                              Sign up to unlock
+                            </span>
+                          </div>
+                        )}
+
                         <div className="flex justify-between font-bold text-base pt-1 border-t border-border">
                           <span>Total</span>
                           <span className="text-primary">${total.toFixed(2)} CAD</span>
@@ -623,6 +789,60 @@ export default function QuoteGenerator() {
           </div>
         </form>
       </Form>
+
+      {/* Promo popup (B) — click-triggered only, no auto-open.
+          Ghosted placeholder copy was removed; proper email input + real consent
+          disclosure below the input. */}
+      <Dialog open={promoOpen} onOpenChange={setPromoOpen}>
+        <DialogContent data-testid="promo-popup">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Mail size={16} className="text-primary" />
+              Get 15% off your first clean
+            </DialogTitle>
+            <DialogDescription>
+              Enter your email below to unlock the welcome discount.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <Input
+              data-testid="input-popup-email"
+              type="email"
+              placeholder="you@email.com"
+              value={popupEmail}
+              onChange={e => setPopupEmail(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handlePopupSubmit();
+                }
+              }}
+            />
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              {POPUP_CONSENT_TEXT}
+            </p>
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setPromoOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={handlePopupSubmit}
+              disabled={!popupEmail.trim() || popupSubmitting}
+              data-testid="button-popup-submit"
+            >
+              {popupSubmitting ? <Loader2 size={14} className="animate-spin" /> : "Unlock discount"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
