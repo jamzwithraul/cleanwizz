@@ -37,6 +37,7 @@ import type {
   QuoteItem, InsertQuoteItem,
   PromoCode, InsertPromoCode,
   Settings, InsertSettings,
+  EmailSignup,
 } from "@shared/schema";
 
 // ── Async storage interface ───────────────────────────────────────────────────
@@ -67,6 +68,18 @@ export interface IStorageAsync {
   // Settings
   getSettings(): Promise<Settings | undefined>;
   upsertSettings(data: Partial<InsertSettings>): Promise<Settings>;
+
+  // Email signups (consent audit log)
+  createEmailSignup(data: {
+    email: string;
+    source: string;
+    consentText: string;
+    ipAddress?: string | null;
+    userAgent?: string | null;
+    bookingId?: string | null;
+  }): Promise<EmailSignup>;
+  getEmailSignup(id: string): Promise<EmailSignup | undefined>;
+  hasEmailSignup(email: string): Promise<boolean>;
 }
 
 // ── Row types returned by Supabase (snake_case) ───────────────────────────────
@@ -450,6 +463,76 @@ export function createSupabaseStorage(): IStorageAsync {
         .maybeSingle();
       if (result.error) throw new Error(`[Supabase/getSettings] ${result.error.message}`);
       return result.data ? mapSettings(result.data as SettingsRow) : undefined;
+    },
+
+    // ── Email Signups (consent audit log) ─────────────────────────────────────
+
+    async createEmailSignup(data: {
+      email: string;
+      source: string;
+      consentText: string;
+      ipAddress?: string | null;
+      userAgent?: string | null;
+      bookingId?: string | null;
+    }): Promise<EmailSignup> {
+      const id = randomUUID();
+      const row = {
+        id,
+        email: data.email.toLowerCase().trim(),
+        source: data.source,
+        consent_text: data.consentText,
+        consent_at: new Date().toISOString(),
+        ip_address: data.ipAddress ?? null,
+        user_agent: data.userAgent ?? null,
+        booking_id: data.bookingId ?? null,
+      };
+      const result = await supabase
+        .from("email_signups")
+        .insert(row)
+        .select()
+        .single();
+      const r = assertNoError(result, "createEmailSignup") as any;
+      return {
+        id: r.id,
+        email: r.email,
+        source: r.source,
+        consentText: r.consent_text,
+        consentAt: r.consent_at,
+        ipAddress: r.ip_address ?? null,
+        userAgent: r.user_agent ?? null,
+        bookingId: r.booking_id ?? null,
+      };
+    },
+
+    async getEmailSignup(id: string): Promise<EmailSignup | undefined> {
+      const result = await supabase
+        .from("email_signups")
+        .select("*")
+        .eq("id", id)
+        .maybeSingle();
+      if (result.error) throw new Error(`[Supabase/getEmailSignup] ${result.error.message}`);
+      if (!result.data) return undefined;
+      const r: any = result.data;
+      return {
+        id: r.id,
+        email: r.email,
+        source: r.source,
+        consentText: r.consent_text,
+        consentAt: r.consent_at,
+        ipAddress: r.ip_address ?? null,
+        userAgent: r.user_agent ?? null,
+        bookingId: r.booking_id ?? null,
+      };
+    },
+
+    async hasEmailSignup(email: string): Promise<boolean> {
+      const result = await supabase
+        .from("email_signups")
+        .select("id")
+        .eq("email", email.toLowerCase().trim())
+        .limit(1);
+      if (result.error) throw new Error(`[Supabase/hasEmailSignup] ${result.error.message}`);
+      return (result.data?.length ?? 0) > 0;
     },
 
     async upsertSettings(data: Partial<InsertSettings>): Promise<Settings> {

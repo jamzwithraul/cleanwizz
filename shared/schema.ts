@@ -90,6 +90,35 @@ export const insertSettingsSchema = createInsertSchema(settings).omit({ updatedA
 export type InsertSettings = z.infer<typeof insertSettingsSchema>;
 export type Settings = typeof settings.$inferSelect;
 
+// ── email_signups (consent audit) ────────────────────────────────────────────
+export const emailSignups = sqliteTable("email_signups", {
+  id: text("id").primaryKey(),
+  email: text("email").notNull(),
+  source: text("source").notNull(),            // "inline_checkbox" | "promo_popup"
+  consentText: text("consent_text").notNull(),
+  consentAt: text("consent_at").notNull(),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  bookingId: text("booking_id"),               // nullable FK → quotes.id
+});
+
+export const insertEmailSignupSchema = createInsertSchema(emailSignups).omit({
+  id: true,
+  consentAt: true,
+  ipAddress: true,
+  userAgent: true,
+});
+export type InsertEmailSignup = z.infer<typeof insertEmailSignupSchema>;
+export type EmailSignup = typeof emailSignups.$inferSelect;
+
+export const emailSignupRequestSchema = z.object({
+  email: z.string().email("Valid email required"),
+  source: z.enum(["inline_checkbox", "promo_popup"]),
+  consentText: z.string().min(1, "consentText required"),
+  bookingId: z.string().nullish(),
+});
+export type EmailSignupRequest = z.infer<typeof emailSignupRequestSchema>;
+
 // ── combined quote form (used on frontend) ────────────────────────────────────
 export const quoteFormSchema = z.object({
   // client
@@ -112,6 +141,13 @@ export const quoteFormSchema = z.object({
   promoCode: z.string().default(""),
   // entrance method if client is not home
   entranceMethod: z.string().default(""),
+  // CASL-compliant email-marketing consent. Required (server-side) before any
+  // discount is applied. Either supply a consent_id from a prior /api/email-signups
+  // row, or set emailConsent=true to have the server record consent inline.
+  emailConsent: z.boolean().default(false),
+  emailConsentId: z.string().nullish(),
+  emailConsentSource: z.enum(["inline_checkbox", "promo_popup"]).nullish(),
+  emailConsentText: z.string().nullish(),
 });
 
 export type QuoteFormValues = z.infer<typeof quoteFormSchema>;

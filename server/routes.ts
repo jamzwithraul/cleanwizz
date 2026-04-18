@@ -4,7 +4,7 @@ import path from "path";
 import fs from "fs";
 import { getStorage } from "./storage";
 import { Resend } from "resend";
-import { quoteFormSchema } from "@shared/schema";
+import { quoteFormSchema, emailSignupRequestSchema } from "@shared/schema";
 import { getAvailableSlots, bookSlot, type SlotInfo } from "./calendar";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
@@ -601,6 +601,33 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
   });
 
+  // ── Email Signups (CASL consent audit) ─────────────────────────────────────
+  // Append-only log — records every time a user ticks a consent checkbox or
+  // submits the promo popup. Captures IP + UA from the request.
+  app.post("/api/email-signups", async (req, res) => {
+    try {
+      const parsed = emailSignupRequestSchema.parse(req.body);
+      const ip =
+        (req.headers["x-forwarded-for"] as string || "").split(",")[0].trim() ||
+        req.ip ||
+        req.socket?.remoteAddress ||
+        null;
+      const ua = (req.headers["user-agent"] as string) || null;
+
+      const row = await getStorage().createEmailSignup({
+        email: parsed.email,
+        source: parsed.source,
+        consentText: parsed.consentText,
+        ipAddress: ip,
+        userAgent: ua,
+        bookingId: parsed.bookingId ?? null,
+      });
+      res.status(201).json({ id: row.id });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
   // ── Clients ───────────────────────────────────────────────────────────────
   app.get("/api/clients", async (_req, res) => {
     try {
@@ -671,18 +698,68 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
       // Pricing — new per-service engine (non-stacking discount, discount only on portion above minimum)
       const sessions = form.numberOfSessions ?? 1;
-      const multiEligible = sessions >= 2;
+      const multiEligibleRaw = sessions >= 2;
 
       // Validate promo code. A code is "welcome-eligible" if it exists, is active,
       // and is a percent-type discount (we treat any active percent code as a welcome-style 15% promo).
-      let welcomeEligible = false;
+      let welcomeEligibleRaw = false;
       let usedPromo: string | null = null;
       if (form.promoCode) {
         const pc = await db.getPromoCode(form.promoCode);
         if (pc && pc.active) {
-          welcomeEligible = true;
+          welcomeEligibleRaw = true;
           usedPromo = pc.code;
         }
+      }
+
+      // ── Email consent gate (CASL) ───────────────────────────────────────────
+      // Every discount (Welcome, Multi-Booking, any future promo) requires
+      // recorded CASL consent. Re-validate server-side; never trust the
+      // frontend alone. If consent is missing, strip discount eligibility.
+      let consentVerified = false;
+      if (form.emailConsentId) {
+        const signup = await db.getEmailSignup(form.emailConsentId);
+        if (signup && signup.email.toLowerCase() === form.email.toLowerCase()) {
+          consentVerified = true;
+        }
+      }
+      if (!consentVerified && form.emailConsent === true) {
+        // Client declared consent without a prior signup row — record it now.
+        const source = form.emailConsentSource ?? "inline_checkbox";
+        const consentText = form.emailConsentText ??
+          "Email me promotional offers from Harry Spotter Cleaning Co. Unsubscribe anytime.";
+        const ip =
+          (req.headers["x-forwarded-for"] as string || "").split(",")[0].trim() ||
+          req.ip ||
+          req.socket?.remoteAddress ||
+          null;
+        const ua = (req.headers["user-agent"] as string) || null;
+        try {
+          await db.createEmailSignup({
+            email: form.email,
+            source,
+            consentText,
+            ipAddress: ip,
+            userAgent: ua,
+          });
+          consentVerified = true;
+        } catch (e: any) {
+          console.error("[consent] Failed to record inline consent:", e?.message);
+        }
+      }
+      if (!consentVerified) {
+        const hasPrior = await db.hasEmailSignup(form.email).catch(() => false);
+        if (hasPrior) consentVerified = true;
+      }
+
+      // Discount eligibility is gated on verified consent. If there is no
+      // consent on file, strip eligibility so the quote is generated at
+      // full price.
+      const multiEligible   = consentVerified && multiEligibleRaw;
+      const welcomeEligible = consentVerified && welcomeEligibleRaw;
+      if (!consentVerified) {
+        // Drop the promo code so it is not recorded as "applied" on a full-price quote.
+        usedPromo = null;
       }
 
       const pricing = computePricing({
