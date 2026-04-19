@@ -11,6 +11,7 @@ import { createClient } from "@supabase/supabase-js";
 import { requireAuth, requireAuthOrInternal, ipRateLimit } from "./middleware/requireAuth";
 import { validateBookingSlots, generateBookingReference, type SlotInput } from "./booking";
 import { buildPayoutRecord } from "./payouts";
+import { attachReminderEndpoints } from "./clientReminders";
 
 // ── Harry Spotter Supabase (contractor data) ──────────────────────────────────
 const HS_SUPABASE_URL  = process.env.HS_SUPABASE_URL  || "https://gjfeqnfmwbsfwnbepwvu.supabase.co";
@@ -512,6 +513,17 @@ function buildEmailHtml(client: any, quote: any, items: any[], baseUrl: string) 
 
 // ── Route Registration ────────────────────────────────────────────────────────
 export async function registerRoutes(_httpServer: Server, app: Express) {
+
+  // ── Internal: 24h client reminder emails ──────────────────────────────────
+  // POST /api/internal/send-client-reminder            (reminder_type='initial')
+  // POST /api/internal/send-client-reminder-update     (reminder_type='update')
+  // Both guarded by X-Internal-Secret, called from the Supabase cron / Edge
+  // Function on harryspottercleaning.ca.
+  attachReminderEndpoints(app, () => ({
+    supabase: hsSupa,
+    resend,
+    internalSecret: process.env.INTERNAL_SERVICE_SECRET || "",
+  }));
 
   // ── Logo asset ────────────────────────────────────────────────────────────
   app.get("/api/assets/logo", (_req, res) => {
