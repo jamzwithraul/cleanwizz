@@ -2245,7 +2245,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
               <p style="font-size:28px;margin:0 0 8px;">⭐⭐⭐⭐⭐</p>
               <p style="color:#6b1629;font-size:16px;font-weight:700;margin:0 0 8px;">Loved your clean? Leave us a review!</p>
               <p style="color:#555;font-size:13px;margin:0 0 16px;">Your feedback helps other Ottawa homeowners discover our magical cleaning service. It only takes 30 seconds!</p>
-              <a href="${process.env.GOOGLE_REVIEW_URL || 'https://g.page/r/harryspottercleaning/review'}" style="display:inline-block;background:#ffd03e;color:#6b1629;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:800;font-size:14px;">
+              <a href="${process.env.GOOGLE_REVIEW_URL || 'https://g.page/r/harrietscleaning/review'}" style="display:inline-block;background:#ffd03e;color:#6b1629;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:800;font-size:14px;">
                 ⭐ Leave a 5-Star Review on Google
               </a>
             </div>
