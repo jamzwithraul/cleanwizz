@@ -1,7 +1,7 @@
 /**
  * requireAuth — Express middleware
  *
- * Verifies `Authorization: Bearer <jwt>` against the Harry Spotter Supabase
+ * Verifies `Authorization: Bearer <jwt>` against the Harriet's Spotless Supabase
  * project (which is the identity provider for all authenticated callers:
  * contractors, owner, admins). On success, attaches `req.user = { id, email }`.
  */
