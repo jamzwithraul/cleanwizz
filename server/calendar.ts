@@ -171,11 +171,13 @@ export async function bookSlot(opts: {
   const event = await calendar.events.insert({
     calendarId: CALENDAR_ID,
     requestBody: {
-      summary: `🧹 Clean Wizz — ${opts.clientName}`,
+      summary: `🧹 Harriet's Spotless booking — ${opts.serviceType} (${opts.clientName})`,
       description: [
+        `Harriet's Spotless Cleaning Co.`,
         `Quote ID: ${opts.quoteId}`,
         `Service: ${opts.serviceType}`,
         `Total: $${opts.total.toFixed(2)} CAD`,
+        `Client: ${opts.clientName}`,
         `Address: ${opts.clientAddress}`,
         `Phone: ${opts.clientPhone}`,
         `Email: ${opts.clientEmail}`,

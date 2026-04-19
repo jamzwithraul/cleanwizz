@@ -12,7 +12,7 @@ import { requireAuth, requireAuthOrInternal, ipRateLimit } from "./middleware/re
 import { validateBookingSlots, generateBookingReference, type SlotInput } from "./booking";
 import { buildPayoutRecord } from "./payouts";
 
-// ── Harry Spotter Supabase (contractor data) ──────────────────────────────────
+// ── Harriet's Spotless Supabase (contractor data) ──────────────────────────────────
 const HS_SUPABASE_URL  = process.env.HS_SUPABASE_URL  || "https://gjfeqnfmwbsfwnbepwvu.supabase.co";
 const HS_SERVICE_KEY   = process.env.HS_SUPABASE_SERVICE_ROLE_KEY || "";
 const hsSupa = HS_SERVICE_KEY ? createClient(HS_SUPABASE_URL, HS_SERVICE_KEY) : null;
@@ -36,8 +36,8 @@ async function triggerCascadeAssignment(opts: {
   // Under 6 hours — notify owner for manual assignment
   if (hoursAway < 6) {
     await resend.emails.send({
-      from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
-      to:      "magic@harryspottercleaning.ca",
+      from:    process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
+      to:      "magic@harrietscleaning.ca",
       subject: `⚠️ Urgent — Manual Assignment Needed (job in ${Math.round(hoursAway * 60)} min)`,
       html: `<p>A client just booked a job starting in <strong>${Math.round(hoursAway * 60)} minutes</strong>. Please assign a contractor manually.</p>
              <p>Quote: ${opts.quoteId} | Client: ${opts.clientName} | ${opts.clientAddr}</p>
@@ -61,8 +61,8 @@ async function triggerCascadeAssignment(opts: {
   if (!contractors || contractors.length === 0) {
     // No contractors — notify owner
     await resend.emails.send({
-      from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
-      to:      "magic@harryspottercleaning.ca",
+      from:    process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
+      to:      "magic@harrietscleaning.ca",
       subject: `⚠️ No contractors available — ${opts.clientName}`,
       html: `<p>No approved contractors found. Please assign manually.</p><p>Quote: ${opts.quoteId}</p>`,
     }).catch(console.error);
@@ -86,8 +86,8 @@ async function triggerCascadeAssignment(opts: {
     cascade_position: 1,
   });
 
-  // Build accept / decline URLs (Harry Spotter portal)
-  const acceptUrl  = `https://harryspottercleaning.ca/contractor?action=accept&jobId=${opts.quoteId}&cid=${contractor.id}`;
+  // Build accept / decline URLs (Harriet's Spotless portal)
+  const acceptUrl  = `https://harrietscleaning.ca/contractor?action=accept&jobId=${opts.quoteId}&cid=${contractor.id}`;
   const declineUrl = `${opts.baseUrl}/api/cascade/decline?quoteId=${opts.quoteId}&cid=${contractor.id}`;
 
   const slotLabel = new Date(opts.start).toLocaleString("en-CA", {
@@ -96,7 +96,7 @@ async function triggerCascadeAssignment(opts: {
   });
 
   await resend.emails.send({
-    from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+    from:    process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
     to:      contractor.email,
     subject: `✨ New Mission — ${slotLabel}`,
     html: buildContractorMissionEmail({
@@ -127,8 +127,8 @@ function buildContractorMissionEmail(o: {
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body style="margin:0;padding:0;background:#f7f6f2;font-family:'Segoe UI',sans-serif;">
 <div style="max-width:560px;margin:32px auto;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.12);">
   <div style="background:${headerGrad};padding:28px 36px;text-align:center;">
-    <img src="${o.logoUrl}" alt="Harry Spotter" style="width:72px;height:72px;border-radius:50%;background:#fff;padding:6px;object-fit:contain;margin-bottom:12px;display:block;margin-left:auto;margin-right:auto;">
-    <h1 style="color:#f9bc15;margin:0;font-size:22px;font-weight:800;">Harry Spotter Cleaning Co.</h1>
+    <img src="${o.logoUrl}" alt="Harriet's Spotless" style="width:72px;height:72px;border-radius:50%;background:#fff;padding:6px;object-fit:contain;margin-bottom:12px;display:block;margin-left:auto;margin-right:auto;">
+    <h1 style="color:#f9bc15;margin:0;font-size:22px;font-weight:800;">Harriet's Spotless Cleaning Co.</h1>
     <p style="color:rgba(249,188,21,.75);margin:4px 0 0;font-size:12px;">New Mission Available</p>
   </div>
   <div style="background:#fff;padding:28px 36px;">
@@ -148,7 +148,7 @@ function buildContractorMissionEmail(o: {
     <p style="font-size:11px;color:#bab9b4;text-align:center;margin:0;">This offer expires in ${windowLabel}. If you do not respond, the job will be offered to the next specialist.</p>
   </div>
   <div style="background:#1a0a0e;padding:14px 36px;text-align:center;border-top:2px solid #f9bc15;">
-    <p style="color:rgba(249,188,21,.5);font-size:11px;margin:0;">Harry Spotter Cleaning Co. · harryspottercleaning.ca</p>
+    <p style="color:rgba(249,188,21,.5);font-size:11px;margin:0;">Harriet's Spotless Cleaning Co. · harrietscleaning.ca</p>
   </div>
 </div>
 </body></html>`;
@@ -414,14 +414,14 @@ function buildEmailHtml(client: any, quote: any, items: any[], baseUrl: string) 
   const logoUrl = `${baseUrl}/api/assets/logo`;
   return `<!DOCTYPE html>
 <html>
-<head><meta charset="UTF-8"><title>Your Cleaning Quote — Harry Spotter Cleaning Co.</title></head>
+<head><meta charset="UTF-8"><title>Your Cleaning Quote — Harriet's Spotless Cleaning Co.</title></head>
 <body style="margin:0;padding:0;background:#fdf8f0;font-family:'Segoe UI',Arial,sans-serif;">
   <div style="max-width:600px;margin:40px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 32px rgba(110,22,41,0.12);">
 
     <!-- Header -->
     <div style="background:linear-gradient(135deg,#6b1629 0%,#a01733 60%,#78420e 100%);padding:32px 40px;text-align:center;">
-      <img src="${logoUrl}" alt="Harry Spotter Cleaning Co." style="width:90px;height:90px;object-fit:contain;border-radius:50%;background:#fff;padding:6px;margin-bottom:14px;display:block;margin-left:auto;margin-right:auto;" />
-      <h1 style="color:#f9bc15;margin:0;font-size:26px;font-weight:800;letter-spacing:0.5px;">Harry Spotter Cleaning Co.</h1>
+      <img src="${logoUrl}" alt="Harriet's Spotless Cleaning Co." style="width:90px;height:90px;object-fit:contain;border-radius:50%;background:#fff;padding:6px;margin-bottom:14px;display:block;margin-left:auto;margin-right:auto;" />
+      <h1 style="color:#f9bc15;margin:0;font-size:26px;font-weight:800;letter-spacing:0.5px;">Harriet's Spotless Cleaning Co.</h1>
       <p style="color:#fde68a;margin:6px 0 0;font-size:14px;letter-spacing:0.5px;">Ottawa’s Magical Cleaning Team</p>
     </div>
 
@@ -500,8 +500,8 @@ function buildEmailHtml(client: any, quote: any, items: any[], baseUrl: string) 
 
     <!-- Footer -->
     <div style="padding:20px 40px;background:linear-gradient(135deg,#4a0f1c,#3d0c16);border-top:3px solid #f9bc15;text-align:center;">
-      <p style="color:#fde68a;font-size:13px;font-weight:600;margin:0 0 4px;">Harry Spotter Cleaning Co.</p>
-      <p style="color:#c4a87a;font-size:12px;margin:0 0 4px;">Ottawa, Ontario &middot; harryspottercleaning.ca</p>
+      <p style="color:#fde68a;font-size:13px;font-weight:600;margin:0 0 4px;">Harriet's Spotless Cleaning Co.</p>
+      <p style="color:#c4a87a;font-size:12px;margin:0 0 4px;">Ottawa, Ontario &middot; harrietscleaning.ca</p>
       <p style="color:#8a6a50;font-size:11px;margin:0;">Quote ID: ${quote.id.slice(0, 8)}</p>
     </div>
 
@@ -515,7 +515,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
   // ── Logo asset ────────────────────────────────────────────────────────────
   app.get("/api/assets/logo", (_req, res) => {
-    const logoPath = path.resolve(__dirname, "public", "harry-spotter-logo.jpg");
+    const logoPath = path.resolve(__dirname, "public", "harriets-spotless-logo.jpg");
     if (fs.existsSync(logoPath)) {
       res.setHeader("Content-Type", "image/jpeg");
       res.setHeader("Cache-Control", "public, max-age=86400");
@@ -732,7 +732,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         // Client declared consent without a prior signup row — record it now.
         const source = form.emailConsentSource ?? "inline_checkbox";
         const consentText = form.emailConsentText ??
-          "Email me promotional offers from Harry Spotter Cleaning Co. Unsubscribe anytime.";
+          "Email me promotional offers from Harriet's Spotless Cleaning Co. Unsubscribe anytime.";
         const ip =
           (req.headers["x-forwarded-for"] as string || "").split(",")[0].trim() ||
           req.ip ||
@@ -889,8 +889,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           const items  = await db.getQuoteItems(q.id);
           const linesSummary = items.map(i => `${i.label}: $${i.lineTotal.toFixed(2)}`).join("<br>");
           await resend.emails.send({
-            from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
-            to:      "magic@harryspottercleaning.ca",
+            from:    process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
+            to:      "magic@harrietscleaning.ca",
             subject: `✅ Quote Accepted — ${client?.name} ($${q.total.toFixed(2)} CAD)`,
             html: `
               <div style="font-family:'Segoe UI',sans-serif;max-width:600px;margin:0 auto;padding:32px;">
@@ -940,9 +940,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       }
 
       await resend.emails.send({
-        from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+        from:    process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
         to:      client.email,
-        subject: `Your Cleaning Quote from Harry Spotter Cleaning Co. — $${q.total.toFixed(2)} CAD`,
+        subject: `Your Cleaning Quote from Harriet's Spotless Cleaning Co. — $${q.total.toFixed(2)} CAD`,
         html,
       });
 
@@ -1013,7 +1013,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         currency: "cad",
         capture_method: "automatic",  // capture payment immediately at booking
         metadata: { quoteId: q.id },
-        description: `Harry Spotter — Quote ${q.id.slice(0, 8)}`,
+        description: `Harriet's Spotless — Quote ${q.id.slice(0, 8)}`,
       });
 
       res.json({ clientSecret: intent.client_secret, amount: total });
@@ -1153,8 +1153,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         });
         const linesSummary = items.map(i => `${i.label}: $${i.lineTotal.toFixed(2)}`).join("<br>");
         await resend.emails.send({
-          from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
-          to:      "magic@harryspottercleaning.ca",
+          from:    process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
+          to:      "magic@harrietscleaning.ca",
           subject: `✅ Booking Confirmed — ${client.name} on ${slotLabel}`,
           html: `
             <div style="font-family:'Segoe UI',sans-serif;max-width:600px;margin:0 auto;padding:32px;">
@@ -1193,7 +1193,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         } catch {}
 
         await resend.emails.send({
-          from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+          from:    process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
           to:      client.email,
           subject: `📅 Your Cleaning is Booked — ${slotLabel}`,
           html: `<!DOCTYPE html>
@@ -1203,7 +1203,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
     <!-- Header -->
     <div style="background:linear-gradient(135deg,#6b1629 0%,#a01733 60%,#78420e 100%);padding:32px 40px;text-align:center;">
-      <h1 style="color:#f9bc15;margin:0;font-size:24px;font-weight:800;letter-spacing:0.5px;">Harry Spotter Cleaning Co.</h1>
+      <h1 style="color:#f9bc15;margin:0;font-size:24px;font-weight:800;letter-spacing:0.5px;">Harriet's Spotless Cleaning Co.</h1>
       <p style="color:#fde68a;margin:6px 0 0;font-size:13px;letter-spacing:0.5px;">Ottawa's Magical Cleaning Team</p>
     </div>
 
@@ -1287,8 +1287,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
     <!-- Footer -->
     <div style="padding:20px 40px;background:linear-gradient(135deg,#4a0f1c,#3d0c16);border-top:3px solid #f9bc15;text-align:center;">
-      <p style="color:#fde68a;font-size:13px;font-weight:600;margin:0 0 4px;">Harry Spotter Cleaning Co.</p>
-      <p style="color:#c4a87a;font-size:12px;margin:0 0 4px;">Ottawa, Ontario &middot; harryspottercleaning.ca</p>
+      <p style="color:#fde68a;font-size:13px;font-weight:600;margin:0 0 4px;">Harriet's Spotless Cleaning Co.</p>
+      <p style="color:#c4a87a;font-size:12px;margin:0 0 4px;">Ottawa, Ontario &middot; harrietscleaning.ca</p>
       <p style="color:#8a6a50;font-size:11px;margin:0;">Booking Reference: ${bookingRef}</p>
     </div>
 
@@ -1364,8 +1364,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         if (resend) {
           const client = q ? await db.getClient(q.clientId) : null;
           await resend.emails.send({
-            from: process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
-            to:   "magic@harryspottercleaning.ca",
+            from: process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
+            to:   "magic@harrietscleaning.ca",
             subject: `⚠️ All contractors declined — Quote #${quoteId}`,
             html: `<p>All contractors have declined or timed out for quote <strong>${quoteId}</strong>. The payment authorization has been automatically cancelled (full refund).${client ? ` Client: ${client.name} (${client.email})` : ''}</p>`,
           }).catch(console.error);
@@ -1373,18 +1373,18 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           // Notify client of the refund
           if (client) {
             await resend.emails.send({
-              from: process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+              from: process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
               to:   client.email,
-              subject: `Update on Your Cleaning Booking — Harry Spotter Cleaning Co.`,
+              subject: `Update on Your Cleaning Booking — Harriet's Spotless Cleaning Co.`,
               html: `<div style="font-family:'Segoe UI',sans-serif;max-width:560px;margin:32px auto;">
                 <div style="background:linear-gradient(135deg,#6b1629,#a01733);padding:24px 32px;border-radius:12px 12px 0 0;text-align:center;">
-                  <h1 style="color:#f9bc15;margin:0;font-size:20px;">Harry Spotter Cleaning Co.</h1>
+                  <h1 style="color:#f9bc15;margin:0;font-size:20px;">Harriet's Spotless Cleaning Co.</h1>
                 </div>
                 <div style="background:#fff;padding:28px 32px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
                   <p>Hi ${client.name},</p>
                   <p>Unfortunately, we were unable to assign a cleaning specialist for your requested time slot. Your payment authorization has been <strong>fully cancelled</strong> — no charge will appear on your card.</p>
                   <p>We sincerely apologize for the inconvenience. Please feel free to book again at a different time, or call us at <a href="tel:3433216242">343-321-6242</a> and we’ll help you find an available slot.</p>
-                  <p style="color:#7a7974;font-size:13px;margin-top:24px;">Harry Spotter Cleaning Co. · harryspottercleaning.ca</p>
+                  <p style="color:#7a7974;font-size:13px;margin-top:24px;">Harriet's Spotless Cleaning Co. · harrietscleaning.ca</p>
                 </div>
               </div>`,
             }).catch(console.error);
@@ -1413,7 +1413,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       // Pick next contractor (position is 1-indexed, array is 0-indexed)
       const nextContractor = contractors[(nextPosition - 1) % contractors.length];
 
-      const baseUrl    = process.env.BASE_URL || "https://api.harryspottercleaning.ca";
+      const baseUrl    = process.env.BASE_URL || "https://api.harrietscleaning.ca";
       const startStr   = jobRow?.scheduled_start ?? new Date(Date.now() + 86400000).toISOString();
       const hoursAway  = (new Date(startStr).getTime() - Date.now()) / 36e5;
       const windowMins = hoursAway >= 24 ? 120 : 30;
@@ -1431,12 +1431,12 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         timeZone: "America/Toronto", weekday: "long", month: "long",
         day: "numeric", hour: "numeric", minute: "2-digit", hour12: true,
       });
-      const acceptUrl  = `https://harryspottercleaning.ca/contractor?action=accept&jobId=${quoteId}&cid=${nextContractor.id}`;
+      const acceptUrl  = `https://harrietscleaning.ca/contractor?action=accept&jobId=${quoteId}&cid=${nextContractor.id}`;
       const declineUrl = `${baseUrl}/api/cascade/decline?quoteId=${quoteId}&cid=${nextContractor.id}`;
 
       if (resend) {
         await resend.emails.send({
-          from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+          from:    process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
           to:      nextContractor.email,
           subject: `✨ New Mission — ${slotLabel}`,
           html: buildContractorMissionEmail({
@@ -1526,7 +1526,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         },
         business_profile: {
           mcc: "7349",
-          product_description: "Residential cleaning services for Harry Spotter Cleaning Co.",
+          product_description: "Residential cleaning services for Harriet's Spotless Cleaning Co.",
         },
         metadata: { contractorId: contractor.id },
       });
@@ -1565,8 +1565,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         return res.status(400).json({ error: "No Stripe account for this contractor" });
       }
 
-      const returnUrl  = `https://harryspottercleaning.ca/contractor?stripe=complete&cid=${contractor.id}`;
-      const refreshUrl = `https://harryspottercleaning.ca/contractor?stripe=refresh&cid=${contractor.id}`;
+      const returnUrl  = `https://harrietscleaning.ca/contractor?stripe=complete&cid=${contractor.id}`;
+      const refreshUrl = `https://harrietscleaning.ca/contractor?stripe=refresh&cid=${contractor.id}`;
 
       const link = await stripe.accountLinks.create({
         account: contractor.stripe_account_id,
@@ -1604,7 +1604,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
   // ══════════════════════════════════════════════════════════════
   // Stripe Identity — Government ID + selfie verification
-  // Platform pays all verification costs. Harry Spotter never stores
+  // Platform pays all verification costs. Harriet's Spotless never stores
   // the ID image itself — only the verified name/DOB/status from Stripe.
   // ══════════════════════════════════════════════════════════════
 
@@ -1651,7 +1651,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         }
       }
 
-      const returnUrl = `https://harryspottercleaning.ca/contractor?identity=complete&cid=${contractorId}`;
+      const returnUrl = `https://harrietscleaning.ca/contractor?identity=complete&cid=${contractorId}`;
 
       const session = await stripe.identity.verificationSessions.create({
         type: "document",
@@ -1665,7 +1665,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         metadata: {
           contractor_id: contractorId,
           contractor_email: contractor.email,
-          platform: "harry_spotter_cleaning",
+          platform: "harriets_spotless_cleaning",
         },
         return_url: returnUrl,
       });
@@ -2031,7 +2031,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   // ══════════════════════════════════════════════════════════════════════════════
   // POST /api/job/complete — Job-complete pipeline
   //   1. Capture Stripe auth hold (manual PaymentIntent)
-  //   2. Update job status in Harry Spotter Supabase
+  //   2. Update job status in Harriet's Spotless Supabase
   //   3. Send thank-you email to client
   //   4. If client hasn't booked another job → generate 7-day discount code & include
   // ══════════════════════════════════════════════════════════════════════════════
@@ -2042,7 +2042,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       const { jobId, contractorId } = req.body;
       if (!jobId) return res.status(400).json({ error: "jobId is required." });
 
-      // ── Step 1: Get job details from Harry Spotter Supabase (if available) ──
+      // ── Step 1: Get job details from Harriet's Spotless Supabase (if available) ──
       let quoteId: string | null = null;
       const now = new Date().toISOString();
 
@@ -2207,8 +2207,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       // ── Step 6: Send thank-you email ──
       if (resend && clientEmail) {
         const thankYouSubject = isReturning
-          ? `✨ Thank you for choosing Harry Spotter again, ${clientName}!`
-          : `✨ Thank you for choosing Harry Spotter, ${clientName}!`;
+          ? `✨ Thank you for choosing Harriet's Spotless again, ${clientName}!`
+          : `✨ Thank you for choosing Harriet's Spotless, ${clientName}!`;
 
         let discountHtml = "";
         if (!isReturning && discountCode) {
@@ -2226,11 +2226,11 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         const thankYouHtml = `
           <div style="font-family:'Segoe UI','Nunito',sans-serif;max-width:600px;margin:0 auto;padding:32px;background:#fdf8f0;">
             <div style="text-align:center;margin-bottom:24px;">
-              <img src="https://harryspottercleaning.ca/Completed_Trasp_Logo_for_Harry_Spotter.png" alt="Harry Spotter" width="80" style="border-radius:12px;" />
+              <img src="https://harrietscleaning.ca/harriets-spotless-logo.png" alt="Harriet's Spotless" width="80" style="border-radius:12px;" />
             </div>
             <h1 style="color:#6b1629;font-size:22px;text-align:center;margin:0 0 8px;">Thank You${clientName ? `, ${clientName}` : ''}! ✨</h1>
             <p style="color:#555;font-size:15px;text-align:center;margin:0 0 24px;">
-              Your home has been given the Harry Spotter treatment and we hope it sparkles!
+              Your home has been given the Harriet's Spotless treatment and we hope it sparkles!
             </p>
             <div style="background:#fff;border:1px solid #e5e2db;border-radius:12px;padding:20px;margin-bottom:16px;">
               <p style="color:#333;font-size:14px;margin:0 0 8px;"><strong>What's next?</strong></p>
@@ -2249,19 +2249,19 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
             </div>
             ${discountHtml}
             <div style="text-align:center;margin-top:24px;">
-              <a href="https://harryspottercleaning.ca" style="display:inline-block;background:#a01733;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px;">
+              <a href="https://harrietscleaning.ca" style="display:inline-block;background:#a01733;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px;">
                 ${isReturning ? 'Book Your Next Clean' : 'Book Again & Save 15%'}
               </a>
             </div>
             <p style="color:#999;font-size:11px;text-align:center;margin-top:24px;">
-              Harry Spotter Cleaning Co. — Ottawa's Magical Cleaners<br/>
-              magic@harryspottercleaning.ca | 343-321-6242
+              Harriet's Spotless Cleaning Co. — Ottawa's Magical Cleaners<br/>
+              magic@harrietscleaning.ca | 343-321-6242
             </p>
           </div>`;
 
         try {
           await resend.emails.send({
-            from: process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+            from: process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
             to: clientEmail,
             subject: thankYouSubject,
             html: thankYouHtml,
@@ -2276,8 +2276,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       if (resend) {
         const contractorLabel = contractorId || "unknown";
         await resend.emails.send({
-          from: process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
-          to: "magic@harryspottercleaning.ca",
+          from: process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
+          to: "magic@harrietscleaning.ca",
           subject: `✅ Job Completed — ${clientName || 'Client'} (Job ${jobId.slice(0, 8)})`,
           html: `<div style="font-family:sans-serif;padding:24px;">
             <h2 style="color:#01696f;">Job Completed</h2>
@@ -2367,7 +2367,7 @@ function buildBookingHtml(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Book Your Cleaning — Harry Spotter Cleaning Co.</title>
+  <title>Book Your Cleaning — Harriet's Spotless Cleaning Co.</title>
   <script src="https://js.stripe.com/v3/"><\/script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
@@ -2473,10 +2473,10 @@ function buildBookingHtml(
     <div class="header">
       <div class="header-top">
         <div class="logo-wrap">
-          <img src="${logoUrl}" alt="Harry Spotter Cleaning Co." onerror="this.style.display='none'">
+          <img src="${logoUrl}" alt="Harriet's Spotless Cleaning Co." onerror="this.style.display='none'">
         </div>
         <div class="header-text">
-          <h1>Harry Spotter Cleaning Co.</h1>
+          <h1>Harriet's Spotless Cleaning Co.</h1>
           <p>Professional Cleaning Services &middot; Ontario, Canada</p>
         </div>
       </div>
@@ -2517,7 +2517,7 @@ function buildBookingHtml(
         <div class="step-title">Service Agreement &amp; Terms</div>
       </div>
       <div class="terms-box">
-        <h3>Harry Spotter Cleaning Co. &mdash; Service Agreement</h3>
+        <h3>Harriet's Spotless Cleaning Co. &mdash; Service Agreement</h3>
 
         <div class="terms-section">
           <h4>Supplies &amp; Access</h4>
@@ -2530,7 +2530,7 @@ function buildBookingHtml(
 
         <div class="terms-section">
           <h4>Payment</h4>
-          <p>Full payment is collected at the time of booking. All transactions are processed securely through Stripe. By booking, you authorize Harry Spotter Cleaning Co. to charge the quoted amount to your payment method.</p>
+          <p>Full payment is collected at the time of booking. All transactions are processed securely through Stripe. By booking, you authorize Harriet's Spotless Cleaning Co. to charge the quoted amount to your payment method.</p>
         </div>
 
         <div class="terms-section">
@@ -2550,7 +2550,7 @@ function buildBookingHtml(
 
         <div class="terms-section">
           <h4>Liability</h4>
-          <p>Harry Spotter Cleaning Co. is not responsible for pre-existing damage, wear and tear, fragile or unsecured items, or damage caused by concealed hazards. Please secure valuables and fragile items before your appointment. This agreement is governed by the laws of the Province of Ontario, Canada.</p>
+          <p>Harriet's Spotless Cleaning Co. is not responsible for pre-existing damage, wear and tear, fragile or unsecured items, or damage caused by concealed hazards. Please secure valuables and fragile items before your appointment. This agreement is governed by the laws of the Province of Ontario, Canada.</p>
         </div>
       </div>
 
@@ -2585,7 +2585,7 @@ function buildBookingHtml(
     </div>
 
     <div class="footer">
-      <p>Harry Spotter Cleaning Co. &middot; Quote #${quote.id.slice(0, 8)} &middot; <a href="https://harryspottercleaning.ca">harryspottercleaning.ca</a></p>
+      <p>Harriet's Spotless Cleaning Co. &middot; Quote #${quote.id.slice(0, 8)} &middot; <a href="https://harrietscleaning.ca">harrietscleaning.ca</a></p>
     </div>
   </div>
 
