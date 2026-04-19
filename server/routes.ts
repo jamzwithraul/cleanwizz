@@ -11,6 +11,15 @@ import { createClient } from "@supabase/supabase-js";
 import { requireAuth, requireAuthOrInternal, ipRateLimit } from "./middleware/requireAuth";
 import { validateBookingSlots, generateBookingReference, type SlotInput } from "./booking";
 import { buildPayoutRecord } from "./payouts";
+import {
+  createAgreementDocument,
+  downloadSignedPdf,
+  downloadCertificate,
+  verifySignwellSignature,
+  type SignWellConfig,
+  type ContractorPrefill,
+} from "./signwell";
+import { sendAgreementSignedConfirmation } from "./emails/agreementSigned";
 
 // ── Harry Spotter Supabase (contractor data) ──────────────────────────────────
 const HS_SUPABASE_URL  = process.env.HS_SUPABASE_URL  || "https://gjfeqnfmwbsfwnbepwvu.supabase.co";
@@ -2024,6 +2033,240 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     } catch (err: any) {
       console.error("[stripe-identity] Webhook handler error:", err.message);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // SignWell contractor agreement
+  //   POST /api/agreement/start   — create SignWell doc from template (authed)
+  //   POST /api/webhooks/signwell — completed-signature webhook (HMAC verified)
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  // Per-contractor in-memory rate limiter: 5 starts/hour. Prevents a compromised
+  // session from burning through the SignWell free-tier quota (3 docs/mo) or
+  // spamming contractors with sign invites.
+  const _agreementStartBuckets = new Map<string, { count: number; resetAt: number }>();
+  function _agreementStartAllowed(contractorId: string): boolean {
+    const now = Date.now();
+    const b = _agreementStartBuckets.get(contractorId);
+    if (!b || b.resetAt <= now) {
+      _agreementStartBuckets.set(contractorId, { count: 1, resetAt: now + 60 * 60 * 1000 });
+      return true;
+    }
+    b.count += 1;
+    return b.count <= 5;
+  }
+
+  function _signwellConfig(): SignWellConfig | null {
+    const apiKey = process.env.SIGNWELL_API_KEY || "";
+    const templateId = process.env.SIGNWELL_TEMPLATE_ID || "";
+    if (!apiKey || !templateId) return null;
+    return { apiKey, templateId };
+  }
+
+  app.post("/api/agreement/start", requireAuth, async (req, res) => {
+    try {
+      if (!hsSupa) return res.status(503).json({ error: "Supabase not configured" });
+      const cfg = _signwellConfig();
+      if (!cfg) return res.status(503).json({ error: "SignWell not configured" });
+
+      const callerEmail = req.user!.email.toLowerCase();
+
+      const { data: contractor, error: cErr } = await hsSupa
+        .from("contractor_applications")
+        .select(
+          "id, full_name, email, phone, address_line1, address_line2, city, province, postal_code, country, agreement_status, agreement_signwell_document_id, agreement_embedded_signing_url",
+        )
+        .ilike("email", callerEmail)
+        .maybeSingle();
+      if (cErr) return res.status(500).json({ error: cErr.message });
+      if (!contractor) {
+        return res.status(403).json({ error: "No contractor application for this user" });
+      }
+
+      if (contractor.agreement_status === "signed") {
+        return res.status(409).json({ error: "Agreement already signed" });
+      }
+
+      if (!_agreementStartAllowed(contractor.id)) {
+        return res
+          .status(429)
+          .json({ error: "Too many agreement starts. Please try again in an hour." });
+      }
+
+      // Reuse an in-progress SignWell document if one already exists — avoids
+      // burning a fresh free-tier slot every time the contractor reopens the page.
+      if (
+        contractor.agreement_status === "in_progress" &&
+        contractor.agreement_signwell_document_id &&
+        contractor.agreement_embedded_signing_url
+      ) {
+        return res.json({
+          documentId: contractor.agreement_signwell_document_id,
+          embeddedSigningUrl: contractor.agreement_embedded_signing_url,
+          reused: true,
+        });
+      }
+
+      const prefill: ContractorPrefill = {
+        id: contractor.id,
+        full_name: contractor.full_name,
+        email: contractor.email,
+        phone: contractor.phone,
+        address_line1: contractor.address_line1,
+        address_line2: contractor.address_line2,
+        city: contractor.city,
+        province: contractor.province,
+        postal_code: contractor.postal_code,
+        country: contractor.country,
+      };
+
+      const result = await createAgreementDocument(cfg, prefill, {
+        redirectUrl:
+          (req.body && req.body.redirectUrl) ||
+          "https://harryspottercleaning.ca/contractor?agreement=complete",
+      });
+
+      await hsSupa
+        .from("contractor_applications")
+        .update({
+          agreement_status: "in_progress",
+          agreement_signwell_document_id: result.documentId,
+          agreement_embedded_signing_url: result.embeddedSigningUrl,
+          agreement_started_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", contractor.id);
+
+      console.log(
+        `[signwell] Created document ${result.documentId} for contractor ${contractor.id}`,
+      );
+
+      res.json({
+        documentId: result.documentId,
+        embeddedSigningUrl: result.embeddedSigningUrl,
+        reused: false,
+      });
+    } catch (err: any) {
+      console.error("[signwell] /api/agreement/start error:", err?.message || err);
+      res.status(500).json({ error: err?.message || "Internal error" });
+    }
+  });
+
+  app.post("/api/webhooks/signwell", async (req, res) => {
+    const secret = process.env.SIGNWELL_WEBHOOK_SECRET || "";
+    const sig =
+      (req.headers["x-signwell-signature"] as string | undefined) ||
+      (req.headers["x-signwell-signature-sha256"] as string | undefined);
+    const raw = (req as any).rawBody;
+
+    if (!secret) {
+      console.error("[signwell] Webhook secret not configured");
+      return res.status(503).send("Webhook secret not configured");
+    }
+    if (!verifySignwellSignature(raw, sig, secret)) {
+      return res.status(401).send("Invalid signature");
+    }
+
+    const event = req.body || {};
+    const eventType: string = event.event_type || event.type || "";
+    // SignWell wraps the document in `data.object` or `data.document` depending
+    // on event shape; tolerate both.
+    const document = event?.data?.object || event?.data?.document || event?.data || {};
+    const documentId: string | undefined = document?.id || event?.document_id;
+
+    if (eventType !== "document_completed" && eventType !== "document.completed") {
+      return res.json({ received: true, ignored: eventType });
+    }
+    if (!documentId) {
+      return res.status(400).json({ error: "Missing document id" });
+    }
+    if (!hsSupa) return res.status(503).json({ error: "Supabase not configured" });
+    const cfg = _signwellConfig();
+    if (!cfg) return res.status(503).json({ error: "SignWell not configured" });
+
+    try {
+      // Look up the contractor by document id.
+      const { data: contractor, error: cErr } = await hsSupa
+        .from("contractor_applications")
+        .select("id, full_name, email, agreement_status")
+        .eq("agreement_signwell_document_id", documentId)
+        .maybeSingle();
+      if (cErr) {
+        console.error("[signwell] Webhook lookup failed:", cErr.message);
+        return res.status(500).json({ error: cErr.message });
+      }
+      if (!contractor) {
+        // Unknown document (maybe a different environment) — ack to stop retries.
+        console.warn(`[signwell] Webhook for unknown document ${documentId}`);
+        return res.json({ received: true, warning: "unknown document" });
+      }
+
+      // Idempotency — SignWell retries. If we've already processed this doc, ack.
+      if (contractor.agreement_status === "signed") {
+        return res.json({ received: true, duplicate: true });
+      }
+
+      const signedPdf = await downloadSignedPdf(cfg, documentId);
+      const certPdf = await downloadCertificate(cfg, documentId);
+
+      const basePath = `${contractor.id}/agreement`;
+      const docPath = `${basePath}/agreement-signed-${documentId}.pdf`;
+      const certPath = `${basePath}/certificate-${documentId}.pdf`;
+
+      const bucket = hsSupa.storage.from("contractor-documents");
+      const up1 = await bucket.upload(docPath, signedPdf, {
+        contentType: "application/pdf",
+        upsert: true,
+      });
+      if (up1.error) {
+        console.error("[signwell] Upload signed PDF failed:", up1.error.message);
+        return res.status(500).json({ error: up1.error.message });
+      }
+      const up2 = await bucket.upload(certPath, certPdf, {
+        contentType: "application/pdf",
+        upsert: true,
+      });
+      if (up2.error) {
+        console.error("[signwell] Upload certificate failed:", up2.error.message);
+        return res.status(500).json({ error: up2.error.message });
+      }
+
+      const { error: updErr } = await hsSupa
+        .from("contractor_applications")
+        .update({
+          agreement_status: "signed",
+          agreement_signed_at: new Date().toISOString(),
+          agreement_document_url: docPath,
+          agreement_certificate_url: certPath,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", contractor.id)
+        // Guard against a concurrent webhook retry flipping a row twice.
+        .neq("agreement_status", "signed");
+      if (updErr) {
+        console.error("[signwell] Update failed:", updErr.message);
+        return res.status(500).json({ error: updErr.message });
+      }
+
+      // Fire-and-forget email — do NOT block the webhook response.
+      if (resend) {
+        void sendAgreementSignedConfirmation(resend, {
+          to: contractor.email,
+          contractorName: contractor.full_name,
+          signedPdf,
+          certificatePdf: certPdf,
+        }).catch((err) =>
+          console.error("[signwell] sendAgreementSignedConfirmation failed:", err),
+        );
+      }
+
+      console.log(`[signwell] Agreement signed for contractor ${contractor.id} (${documentId})`);
+      res.json({ received: true });
+    } catch (err: any) {
+      console.error("[signwell] Webhook handler error:", err?.message || err);
+      res.status(500).json({ error: err?.message || "Internal error" });
     }
   });
 
