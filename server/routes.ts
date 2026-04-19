@@ -2042,6 +2042,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       const { jobId, contractorId } = req.body;
       if (!jobId) return res.status(400).json({ error: "jobId is required." });
 
+      const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get("host")}`;
+
       // ── Step 1: Get job details from Harriet's Spotless Supabase (if available) ──
       let quoteId: string | null = null;
       const now = new Date().toISOString();
@@ -2226,7 +2228,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         const thankYouHtml = `
           <div style="font-family:'Segoe UI','Nunito',sans-serif;max-width:600px;margin:0 auto;padding:32px;background:#fdf8f0;">
             <div style="text-align:center;margin-bottom:24px;">
-              <img src="https://harrietscleaning.ca/harriets-spotless-logo.png" alt="Harriet's Spotless" width="80" style="border-radius:12px;" />
+              <img src="${baseUrl}/api/assets/logo" alt="Harriet's Spotless" width="80" style="border-radius:12px;" />
             </div>
             <h1 style="color:#6b1629;font-size:22px;text-align:center;margin:0 0 8px;">Thank You${clientName ? `, ${clientName}` : ''}! ✨</h1>
             <p style="color:#555;font-size:15px;text-align:center;margin:0 0 24px;">
