@@ -242,162 +242,37 @@ function fuzzyNameScore(a: string, b: string): number {
 }
 
 // ── Pricing Engine ────────────────────────────────────────────────────────────
-// Per-service minimums + sqft rates. Discounts apply ONLY to the portion of
-// sqftPrice above the minimum; add-ons are layered on top and never discounted.
-const OVEN_PRICE = 100;            // in-oven cleaning add-on
-const LAUNDRY_PRICE = 100;         // laundry wash & fold add-on
-const HST_RATE = 0.13;             // Ontario HST
-
-type ServiceType = "standard" | "deep" | "moveout";
-
-const SERVICE_PRICING: Record<ServiceType, { minimum: number; sqftRate: number; label: string }> = {
-  standard: { minimum: 289, sqftRate: 0.29, label: "Standard Clean" },
-  deep:     { minimum: 499, sqftRate: 0.39, label: "Deep Clean" },
-  moveout:  { minimum: 699, sqftRate: 0.49, label: "Move-In/Move-Out Clean" },
-};
-
-// Flat contractor payouts (per job, regardless of quote total)
-const CONTRACTOR_PAYOUT: Record<ServiceType, number> = {
-  standard: 160,
-  deep:     240,
-  moveout:  320,
-};
-
-// Non-stacking discount rates. Take the larger of the eligible discounts.
-const DISCOUNT_RATES = {
-  welcome: 0.15,      // WELCOME15 single-booking promo
-  multi:   0.20,      // 2+ sessions multi-booking
-};
-
-const OVEN_NOTICE = "Easy-Off is used for deep oven cleaning. This product emits a strong odour. We recommend opening windows for ventilation during and after the service.";
-const LAUNDRY_NOTICE = "Client is responsible for sorting special care items (delicates, dry-clean-only, etc.) before the service and for putting laundry away after completion.";
+// All pricing constants and pure helpers live in ./pricing.ts so they can be
+// unit tested without pulling in Express / server-only dependencies.
+import {
+  type ComputePricingInput,
+  type PricingBreakdown,
+  LARGE_HOME_ADDON_LABEL,
+  OVEN_NOTICE,
+  LAUNDRY_NOTICE,
+  HST_RATE,
+  computePricing,
+  largeHomeAddOn,
+  defaultContractorCount,
+  maxContractorCount,
+  totalCompanyPayout,
+  getContractorPayout,
+} from "./pricing";
 
 const round2 = (n: number) => parseFloat(n.toFixed(2));
 
-export interface ComputePricingInput {
-  serviceType: ServiceType | string;
-  squareFootage: number;
-  addons?: string[];
-  sessions?: number;
-  discountCode?: string | null;
-  welcomeEligible?: boolean; // true if this code is a welcome/15% promo
-  multiEligible?: boolean;   // true if sessions >= 2
-  settings?: any;            // optional: pricing_settings for addon prices
-}
-
-export interface PricingBreakdown {
-  serviceType: ServiceType;
-  minimum: number;
-  sqftRate: number;
-  sqftPrice: number;
-  basePrice: number;
-  discountablePortion: number;
-  discountPct: number;
-  discountLabel: string | null;
-  discount: number;
-  discountedBase: number;
-  addOnsTotal: number;
-  subtotal: number;
-  hst: number;
-  total: number;
-  lineItems: { label: string; quantity: number; unitPrice: number; lineTotal: number; category: string }[];
-}
-
-function resolveService(serviceType: string): ServiceType {
-  if (serviceType === "deep" || serviceType === "moveout" || serviceType === "standard") return serviceType;
-  return "standard";
-}
-
-export function computePricing(input: ComputePricingInput): PricingBreakdown {
-  const service = resolveService(input.serviceType);
-  const sqft = Math.max(0, Math.floor(input.squareFootage || 0));
-  const { minimum, sqftRate, label } = SERVICE_PRICING[service];
-  const s = input.settings || {};
-
-  const sqftPrice = round2(sqft * sqftRate);
-  const basePrice = Math.max(minimum, sqftPrice);
-
-  // Determine applicable discount (NON-STACKING — take the larger)
-  let discountPct = 0;
-  let discountLabel: string | null = null;
-  if (input.multiEligible && input.welcomeEligible) {
-    discountPct = Math.max(DISCOUNT_RATES.multi, DISCOUNT_RATES.welcome);
-    discountLabel = discountPct === DISCOUNT_RATES.multi ? "Multi-Booking (20%)" : "Welcome (15%)";
-  } else if (input.multiEligible) {
-    discountPct = DISCOUNT_RATES.multi;
-    discountLabel = "Multi-Booking (20%)";
-  } else if (input.welcomeEligible) {
-    discountPct = DISCOUNT_RATES.welcome;
-    discountLabel = "Welcome (15%)";
-  }
-
-  const discountablePortion = Math.max(0, round2(sqftPrice - minimum));
-  const discount = round2(discountablePortion * discountPct);
-  const discountedBase = round2(basePrice - discount);
-
-  // Add-ons (never discounted) — layer on top of basePrice
-  const addonCatalog: Record<string, { label: string; price: number; notice?: string }> = {
-    fridge:     { label: "Inside fridge",       price: typeof s.fridgePrice === "number" ? s.fridgePrice : 30 },
-    windows:    { label: "Interior windows",     price: typeof s.windowsPrice === "number" ? s.windowsPrice : 40 },
-    baseboards: { label: "Baseboards",           price: typeof s.baseboardsPrice === "number" ? s.baseboardsPrice : 35 },
-    grout:      { label: "Grout scrubbing",      price: typeof s.groutPrice === "number" ? s.groutPrice : 35 },
-    oven:       { label: "In-Oven Cleaning",     price: OVEN_PRICE, notice: OVEN_NOTICE },
-    laundry:    { label: "Laundry Wash & Fold",  price: LAUNDRY_PRICE, notice: LAUNDRY_NOTICE },
-  };
-  const addonLines: { label: string; quantity: number; unitPrice: number; lineTotal: number; category: string }[] = [];
-  for (const a of input.addons || []) {
-    const entry = addonCatalog[a];
-    if (!entry) continue;
-    addonLines.push({ label: entry.label, quantity: 1, unitPrice: entry.price, lineTotal: entry.price, category: "addon" });
-  }
-  const addOnsTotal = round2(addonLines.reduce((sum, i) => sum + i.lineTotal, 0));
-
-  const subtotal = round2(discountedBase + addOnsTotal);
-  const hst = round2(subtotal * HST_RATE);
-  const total = round2(subtotal + hst);
-
-  // Line items for UI / email rendering
-  const lineItems: { label: string; quantity: number; unitPrice: number; lineTotal: number; category: string }[] = [];
-  lineItems.push({
-    label: `${label} — base (minimum $${minimum.toFixed(2)})`,
-    quantity: 1,
-    unitPrice: minimum,
-    lineTotal: minimum,
-    category: "base",
-  });
-  if (sqftPrice > minimum) {
-    lineItems.push({
-      label: `Sqft upgrade (${sqft} sq ft @ $${sqftRate}/sq ft, above minimum)`,
-      quantity: sqft,
-      unitPrice: sqftRate,
-      lineTotal: round2(sqftPrice - minimum),
-      category: "sqft",
-    });
-  }
-  lineItems.push(...addonLines);
-
-  return {
-    serviceType: service,
-    minimum,
-    sqftRate,
-    sqftPrice,
-    basePrice,
-    discountablePortion,
-    discountPct,
-    discountLabel,
-    discount,
-    discountedBase,
-    addOnsTotal,
-    subtotal,
-    hst,
-    total,
-    lineItems,
-  };
-}
-
-export function getContractorPayout(serviceType: string): number {
-  return CONTRACTOR_PAYOUT[resolveService(serviceType)];
-}
+// Re-export so existing imports (tests, other modules) keep working.
+export {
+  type ComputePricingInput,
+  type PricingBreakdown,
+  LARGE_HOME_ADDON_LABEL,
+  computePricing,
+  largeHomeAddOn,
+  defaultContractorCount,
+  maxContractorCount,
+  totalCompanyPayout,
+  getContractorPayout,
+};
 
 // ── Email Template ────────────────────────────────────────────────────────────
 function buildEmailHtml(client: any, quote: any, items: any[], baseUrl: string) {
@@ -839,6 +714,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         discountedBase: round2(pricing.discountedBase * sessions),
         addOnsTotal: round2(pricing.addOnsTotal * sessions),
         addons:      rawItems.filter(i => i.category === "addon").map(i => ({ label: i.label, amount: i.lineTotal })),
+        largeHomeAddOn: round2(pricing.largeHomeAddOn * sessions),
         numberOfSessions: sessions,
         multiDiscount: pricing.discountLabel === "Multi-Booking (20%)" ? discount : 0,
         promoDiscount: pricing.discountLabel === "Welcome (15%)" ? discount : 0,
@@ -1086,6 +962,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           if (Array.isArray(sArr) && typeof sArr[0] === "string") serviceTypeForJob = sArr[0];
         } catch {}
         const flatPayout = getContractorPayout(serviceTypeForJob);
+        const assignedContractorCount = defaultContractorCount(q.squareFootage || 0);
+        const largeHomeAddonCents = Math.round(largeHomeAddOn(q.squareFootage || 0) * 100);
         for (let i = 0; i < validSlots.length; i++) {
           const s = validSlots[i];
           const eventLink = calendarResults[i]?.eventLink || "";
@@ -1104,7 +982,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
             service_type:    serviceTypeForJob,
             scheduled_start: s.start,
             scheduled_end:   s.end,
-            pay_amount:      flatPayout,
+            pay_amount:      flatPayout, // solo payout per contractor
+            assigned_contractor_count: assignedContractorCount,
+            large_home_addon_cents: largeHomeAddonCents,
             notes,
             status:          "open",
             quote_id:        q.id,
@@ -2046,15 +1926,59 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
       // ── Step 1: Get job details from Harriet's Spotless Supabase (if available) ──
       let quoteId: string | null = null;
+      let jobRow: any = null;
       const now = new Date().toISOString();
 
       if (hsSupa) {
         const { data: job } = await hsSupa
           .from("jobs")
-          .select("quote_id")
+          .select("*")
           .eq("id", jobId)
           .single();
-        if (job) quoteId = job.quote_id;
+        if (job) {
+          jobRow = job;
+          quoteId = job.quote_id;
+        }
+      }
+
+      // ── Step 1b: Team-job gating ─────────────────────────────────────────
+      // For multi-contractor jobs, stamp THIS contractor's completion into
+      // the correct slot and bail out early if we're still waiting on other
+      // teammates. Only proceed to payouts / client email / discount code
+      // once every assigned contractor has confirmed completion.
+      const assignedCount: number = Number(jobRow?.assigned_contractor_count || 1);
+      if (assignedCount > 1 && hsSupa && jobRow && contractorId) {
+        const role =
+          contractorId === jobRow.second_contractor_id
+            ? "second"
+            : contractorId === jobRow.third_contractor_id
+            ? "third"
+            : "primary";
+        const stamp: Record<string, string> = {};
+        if (role === "second")     stamp.second_contractor_completed_at = now;
+        else if (role === "third") stamp.third_contractor_completed_at  = now;
+        else                       stamp.completed_at                    = now;
+        await hsSupa.from("jobs").update(stamp).eq("id", jobId);
+
+        const { data: refreshed } = await hsSupa
+          .from("jobs")
+          .select("completed_at, second_contractor_completed_at, third_contractor_completed_at, assigned_contractor_count")
+          .eq("id", jobId)
+          .single();
+        const n = Number(refreshed?.assigned_contractor_count || assignedCount);
+        const primaryDone = !!refreshed?.completed_at;
+        const secondDone  = !!refreshed?.second_contractor_completed_at;
+        const thirdDone   = !!refreshed?.third_contractor_completed_at;
+        const allDone = primaryDone && (n < 2 || secondDone) && (n < 3 || thirdDone);
+        if (!allDone) {
+          return res.json({
+            success: true,
+            jobId,
+            teamJob: true,
+            awaitingTeammates: true,
+            payoutStatus: "pending_team",
+          });
+        }
       }
 
       // ── Step 2: Get the quote & client from Clean Wizz Supabase ──
@@ -2077,23 +2001,22 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         }
       }
 
-      // ── Step 3: Payment already captured at booking. Transfer payout to
-      // contractor via Stripe Connect. This is the ONLY place payouts are
-      // created — the Supabase Edge Function `process-payouts` no longer
-      // invents `sent` rows without a real Stripe transfer.
-      let transferResult: any = null;
-      let payoutStatus: "sent" | "failed" | "skipped" = "skipped";
-      let payoutError: string | null = null;
+      // ── Step 3: Payment already captured at booking. Transfer the SOLO
+      // payout to EACH assigned contractor. For team jobs (2–3 contractors)
+      // every assigned contractor receives the full solo rate. This is the
+      // ONLY place payouts are created — the Supabase Edge Function
+      // `process-payouts` no longer invents `sent` rows without a real
+      // Stripe transfer.
       let payAmount = 0;
-      if (stripe && contractorId && hsSupa) {
-        const { data: ctr } = await hsSupa
-          .from("contractor_applications")
-          .select("stripe_account_id, pay_amount")
-          .eq("id", contractorId)
+      const payoutResults: Array<{ contractorId: string; status: "sent" | "failed"; amount: number; error?: string | null }> = [];
+      if (stripe && hsSupa) {
+        const { data: jobData } = await hsSupa
+          .from("jobs")
+          .select("service_type, pay_amount, contractor_id, second_contractor_id, third_contractor_id, assigned_contractor_count")
+          .eq("id", jobId)
           .single();
 
         let serviceType: string | null = null;
-        const { data: jobData } = await hsSupa.from("jobs").select("service_type, pay_amount").eq("id", jobId).single();
         if (jobData?.service_type) {
           serviceType = jobData.service_type;
           payAmount = getContractorPayout(jobData.service_type);
@@ -2104,55 +2027,63 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           await hsSupa.from("jobs").update({ pay_amount: payAmount }).eq("id", jobId);
         }
 
-        if (ctr?.stripe_account_id && payAmount > 0) {
-          try {
-            transferResult = await stripe.transfers.create({
-              amount: Math.round(payAmount * 100), // cents
-              currency: "cad",
-              destination: ctr.stripe_account_id,
-              description: `Payout for job ${jobId.slice(0, 8)}`,
-              metadata: { jobId, contractorId },
-            });
-            payoutStatus = "sent";
-            console.log(`[job-complete] Transferred $${payAmount.toFixed(2)} to ${ctr.stripe_account_id}`);
-          } catch (transferErr: any) {
-            payoutStatus = "failed";
-            payoutError = transferErr?.message || String(transferErr);
-            console.error(`[job-complete] Transfer error: ${payoutError}`);
-          }
-        } else {
-          payoutError = !ctr?.stripe_account_id
-            ? "No Stripe Connect account"
-            : "No pay_amount resolved";
-          console.log(`[job-complete] Skipped Stripe transfer: ${payoutError}`);
-        }
+        // Determine the full set of contractors to pay. Prefer the assigned
+        // slots on the job row; fall back to the contractor that invoked
+        // this handler if nothing is set yet (legacy single-contractor jobs).
+        const assignedIds = [
+          jobData?.contractor_id,
+          jobData?.second_contractor_id,
+          jobData?.third_contractor_id,
+        ].filter((x): x is string => typeof x === "string" && x.length > 0);
+        const contractorsToPay = assignedIds.length > 0
+          ? assignedIds
+          : (contractorId ? [contractorId] : []);
 
-        // Record the result in the payouts table. Never mark `sent` without
-        // a real Stripe transfer response.
-        if (payoutStatus === "sent" && transferResult) {
+        for (const cid of contractorsToPay) {
+          const { data: ctr } = await hsSupa
+            .from("contractor_applications")
+            .select("stripe_account_id")
+            .eq("id", cid)
+            .single();
+
+          let transferResult: any = null;
+          let status: "sent" | "failed" = "failed";
+          let errMsg: string | null = null;
+
+          if (ctr?.stripe_account_id && payAmount > 0) {
+            try {
+              transferResult = await stripe.transfers.create({
+                amount: Math.round(payAmount * 100), // cents
+                currency: "cad",
+                destination: ctr.stripe_account_id,
+                description: `Payout for job ${jobId.slice(0, 8)}`,
+                metadata: { jobId, contractorId: cid },
+              });
+              status = "sent";
+              console.log(`[job-complete] Transferred $${payAmount.toFixed(2)} to ${ctr.stripe_account_id}`);
+            } catch (transferErr: any) {
+              errMsg = transferErr?.message || String(transferErr);
+              console.error(`[job-complete] Transfer error for ${cid}: ${errMsg}`);
+            }
+          } else {
+            errMsg = !ctr?.stripe_account_id
+              ? "No Stripe Connect account"
+              : "No pay_amount resolved";
+            console.log(`[job-complete] Skipped Stripe transfer for ${cid}: ${errMsg}`);
+          }
+
           await hsSupa.from("payouts").upsert(
             buildPayoutRecord({
               jobId,
-              contractorId,
+              contractorId: cid,
               amount: payAmount,
               now,
-              transferId: transferResult.id,
-              error: null,
+              transferId: status === "sent" ? transferResult?.id ?? null : null,
+              error: status === "sent" ? null : errMsg,
             }),
-            { onConflict: "job_id" } as any,
+            { onConflict: "job_id,contractor_id" } as any,
           );
-        } else if (payoutStatus === "failed") {
-          await hsSupa.from("payouts").upsert(
-            buildPayoutRecord({
-              jobId,
-              contractorId,
-              amount: payAmount,
-              now,
-              transferId: null,
-              error: payoutError,
-            }),
-            { onConflict: "job_id" } as any,
-          );
+          payoutResults.push({ contractorId: cid, status, amount: payAmount, error: errMsg });
         }
       }
 
@@ -2287,20 +2218,31 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
             <p><strong>Job ID:</strong> ${jobId}</p>
             <p><strong>Contractor:</strong> ${contractorLabel}</p>
             <p><strong>Payment:</strong> ✅ Captured at booking</p>
-            <p><strong>Contractor Payout:</strong> ${transferResult ? `✅ $${(transferResult.amount / 100).toFixed(2)} transferred via Stripe Connect` : '⚠️ No Stripe Connect — manual payout needed'}</p>
+            <p><strong>Contractor Payout:</strong> ${payoutResults.length === 0
+              ? '⚠️ No contractors to pay — manual payout needed'
+              : payoutResults.map((p) => `${p.status === 'sent' ? '✅' : '❌'} $${p.amount.toFixed(2)} → ${p.contractorId.slice(0, 8)}${p.error ? ` (${p.error})` : ''}`).join('<br>')}</p>
+            <p><strong>Total Company Payout:</strong> $${(payoutResults.reduce((s, p) => s + (p.status === 'sent' ? p.amount : 0), 0)).toFixed(2)}</p>
             <p><strong>Returning Client:</strong> ${isReturning ? 'Yes ↩' : `No — sent 15% discount (${discountCode})`}</p>
             <p><strong>Payout:</strong> Immediate</p>
           </div>`,
         }).catch(console.error);
       }
 
+      const anySent = payoutResults.some((p) => p.status === "sent");
+      const anyFailed = payoutResults.some((p) => p.status === "failed");
+      const payoutStatus: "sent" | "partial" | "failed" | "skipped" =
+        payoutResults.length === 0 ? "skipped"
+          : anySent && anyFailed ? "partial"
+          : anySent ? "sent"
+          : "failed";
+
       res.json({
         success: true,
         jobId,
         captured: true,
         payoutStatus,
-        payoutError,
-        transferId: transferResult?.id || null,
+        payouts: payoutResults,
+        totalCompanyPayout: payoutResults.reduce((s, p) => s + (p.status === "sent" ? p.amount : 0), 0),
         emailSent: !!(resend && clientEmail),
         discountCode: discountCode || null,
         isReturning,
