@@ -717,55 +717,40 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         }
       }
 
-      // ── Email consent gate (CASL) ───────────────────────────────────────────
-      // Every discount (Welcome, Multi-Booking, any future promo) requires
-      // recorded CASL consent. Re-validate server-side; never trust the
-      // frontend alone. If consent is missing, strip discount eligibility.
-      let consentVerified = false;
-      if (form.emailConsentId) {
-        const signup = await db.getEmailSignup(form.emailConsentId);
-        if (signup && signup.email.toLowerCase() === form.email.toLowerCase()) {
-          consentVerified = true;
-        }
-      }
-      if (!consentVerified && form.emailConsent === true) {
-        // Client declared consent without a prior signup row — record it now.
-        const source = form.emailConsentSource ?? "inline_checkbox";
-        const consentText = form.emailConsentText ??
-          "Email me promotional offers from Harriet's Spotless Cleaning Co. Unsubscribe anytime.";
-        const ip =
-          (req.headers["x-forwarded-for"] as string || "").split(",")[0].trim() ||
-          req.ip ||
-          req.socket?.remoteAddress ||
-          null;
-        const ua = (req.headers["user-agent"] as string) || null;
-        try {
+      // ── CASL consent — implied from booking (s.10(9), 24-month window) ───────
+      // Booking a paid service creates an Existing Business Relationship under
+      // CASL §10(9). That gives us implied consent to send commercial email
+      // for 24 months from the transaction. We record an audit row regardless
+      // so we have a timestamp + IP/UA trail if anyone ever asks for proof.
+      //
+      // Discounts are NO LONGER gated on consent. The booking action itself
+      // is the consent event — separating them just added checkout friction.
+      const ip =
+        (req.headers["x-forwarded-for"] as string || "").split(",")[0].trim() ||
+        req.ip ||
+        req.socket?.remoteAddress ||
+        null;
+      const ua = (req.headers["user-agent"] as string) || null;
+      try {
+        const hasPrior = await db.hasEmailSignup(form.email).catch(() => false);
+        if (!hasPrior) {
           await db.createEmailSignup({
             email: form.email,
-            source,
-            consentText,
+            source: "booking_implied",
+            consentText:
+              "Implied consent from paid booking transaction — CASL §10(9) Existing Business Relationship (24-month window).",
             ipAddress: ip,
             userAgent: ua,
           });
-          consentVerified = true;
-        } catch (e: any) {
-          console.error("[consent] Failed to record inline consent:", e?.message);
         }
-      }
-      if (!consentVerified) {
-        const hasPrior = await db.hasEmailSignup(form.email).catch(() => false);
-        if (hasPrior) consentVerified = true;
+      } catch (e: any) {
+        // Non-fatal: failing to write the audit row should never block a paid booking.
+        console.error("[consent] Failed to record implied-consent audit row:", e?.message);
       }
 
-      // Discount eligibility is gated on verified consent. If there is no
-      // consent on file, strip eligibility so the quote is generated at
-      // full price.
-      const multiEligible   = consentVerified && multiEligibleRaw;
-      const welcomeEligible = consentVerified && welcomeEligibleRaw;
-      if (!consentVerified) {
-        // Drop the promo code so it is not recorded as "applied" on a full-price quote.
-        usedPromo = null;
-      }
+      // Discount eligibility — promo code + multi-session — applied unconditionally.
+      const multiEligible   = multiEligibleRaw;
+      const welcomeEligible = welcomeEligibleRaw;
 
       const pricing = computePricing({
         serviceType: form.serviceType,
