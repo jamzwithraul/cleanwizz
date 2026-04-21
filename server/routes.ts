@@ -248,12 +248,13 @@ const OVEN_PRICE = 100;            // in-oven cleaning add-on
 const LAUNDRY_PRICE = 100;         // laundry wash & fold add-on
 const HST_RATE = 0.13;             // Ontario HST
 
-type ServiceType = "standard" | "deep" | "moveout";
+type ServiceType = "standard" | "deep" | "moveout" | "micro";
 
 const SERVICE_PRICING: Record<ServiceType, { minimum: number; sqftRate: number; label: string }> = {
   standard: { minimum: 289, sqftRate: 0.29, label: "Standard Clean" },
   deep:     { minimum: 499, sqftRate: 0.39, label: "Deep Clean" },
   moveout:  { minimum: 699, sqftRate: 0.49, label: "Move-In/Move-Out Clean" },
+  micro:    { minimum: 199, sqftRate: 0,    label: "Micro Clean" },
 };
 
 // Flat contractor payouts (per job, regardless of quote total)
@@ -261,6 +262,7 @@ const CONTRACTOR_PAYOUT: Record<ServiceType, number> = {
   standard: 160,
   deep:     240,
   moveout:  320,
+  micro:    120,
 };
 
 // Non-stacking discount rates. Take the larger of the eligible discounts.
@@ -304,12 +306,43 @@ export interface PricingBreakdown {
 }
 
 function resolveService(serviceType: string): ServiceType {
-  if (serviceType === "deep" || serviceType === "moveout" || serviceType === "standard") return serviceType;
+  if (serviceType === "deep" || serviceType === "moveout" || serviceType === "standard" || serviceType === "micro") return serviceType;
   return "standard";
 }
 
 export function computePricing(input: ComputePricingInput): PricingBreakdown {
   const service = resolveService(input.serviceType);
+
+  // Micro Clean: flat $199, no sqft upgrade, max 800 sqft
+  if (service === "micro") {
+    const sqft = Math.max(0, Math.floor(input.squareFootage || 0));
+    if (sqft > 800) {
+      throw Object.assign(new Error("Micro Clean is only available for homes up to 800 sq ft."), { statusCode: 400 });
+    }
+    const flatPrice = 199;
+    const hst = round2(flatPrice * HST_RATE);
+    const total = round2(flatPrice + hst);
+    return {
+      serviceType: service,
+      minimum: flatPrice,
+      sqftRate: 0,
+      sqftPrice: 0,
+      basePrice: flatPrice,
+      discountablePortion: 0,
+      discountPct: 0,
+      discountLabel: null,
+      discount: 0,
+      discountedBase: flatPrice,
+      addOnsTotal: 0,
+      subtotal: flatPrice,
+      hst,
+      total,
+      lineItems: [
+        { label: "Micro Clean \u2014 flat rate (homes up to 800 sq ft)", quantity: 1, unitPrice: flatPrice, lineTotal: flatPrice, category: "base" },
+      ],
+    };
+  }
+
   const sqft = Math.max(0, Math.floor(input.squareFootage || 0));
   const { minimum, sqftRate, label } = SERVICE_PRICING[service];
   const s = input.settings || {};
@@ -2309,6 +2342,201 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     } catch (err: any) {
       console.error("[job-complete] Pipeline error:", err?.message || err, err?.stack);
       res.status(500).json({ error: err.message || "Job completion pipeline failed." });
+    }
+  });
+
+  // ── Subscription v1 ───────────────────────────────────────────────────────
+  // Imports are done inline here so the module stays self-contained and the
+  // existing registerRoutes signature is unchanged.
+  const {
+    getSubscriptionCounts,
+    applySubscriptionDiscount,
+    createVisitForSubscription,
+    SUBSCRIPTION_SEAT_CAP,
+  } = await import("./subscriptions.js");
+
+  // ── GET /api/subscriptions/seats — public seat-counter ───────────────────
+  app.get("/api/subscriptions/seats", async (_req, res) => {
+    try {
+      const { active, waitlisted } = await getSubscriptionCounts();
+      res.json({
+        capacity:  SUBSCRIPTION_SEAT_CAP,
+        active,
+        available: Math.max(0, SUBSCRIPTION_SEAT_CAP - active),
+        waitlist:  waitlisted,
+      });
+    } catch (err: any) {
+      console.error("[subscriptions/seats]", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── POST /api/subscriptions — create a new subscription ─────────────────
+  app.post("/api/subscriptions", async (req, res) => {
+    try {
+      const {
+        customer_email,
+        customer_name,
+        customer_phone,
+        service_address,
+        service_type,
+        sqft,
+        frequency     = "biweekly",
+        stripe_payment_method_id,
+        next_visit_at,
+      } = req.body;
+
+      // ── Validate required fields ─────────────────────────────────────────
+      if (!customer_email || !customer_name || !service_address || !service_type || !sqft) {
+        return res.status(400).json({
+          error: "customer_email, customer_name, service_address, service_type, and sqft are required.",
+        });
+      }
+
+      // ── Frequency gate (bi-weekly only in v1) ────────────────────────────
+      if (frequency !== "biweekly") {
+        return res.status(400).json({
+          error: "Only 'biweekly' frequency is supported in v1.",
+        });
+      }
+
+      // ── Service type gate ────────────────────────────────────────────────
+      const VALID_SERVICE_TYPES = ["standard", "deep", "moveout", "micro"] as const;
+      if (!VALID_SERVICE_TYPES.includes(service_type)) {
+        return res.status(400).json({
+          error: `service_type must be one of: ${VALID_SERVICE_TYPES.join(", ")}.`,
+        });
+      }
+
+      // ── sqft bounds ───────────────────────────────────────────────────────
+      const sqftNum = parseInt(sqft, 10);
+      if (isNaN(sqftNum) || sqftNum <= 0) {
+        return res.status(400).json({ error: "sqft must be a positive integer." });
+      }
+      if (service_type === "micro" && sqftNum > 800) {
+        return res.status(400).json({ error: "Micro Clean is only available for homes up to 800 sq ft." });
+      }
+
+      // ── Compute locked base price ─────────────────────────────────────────
+      const pricing = computePricing({ serviceType: service_type, squareFootage: sqftNum });
+      const locked_base_price_cents = Math.round(pricing.subtotal * 100);
+
+      // ── Seat cap check ────────────────────────────────────────────────────
+      const { active, waitlisted } = await getSubscriptionCounts();
+      const isWaitlisted = active >= SUBSCRIPTION_SEAT_CAP;
+      const insertStatus = isWaitlisted ? "waitlisted" : "active";
+
+      // ── Stripe: create/fetch customer + attach payment method ─────────────
+      let stripeCustomerId: string | null = null;
+      if (stripe && stripe_payment_method_id) {
+        try {
+          // Check if customer already exists for this email
+          const existing = await stripe.customers.list({ email: customer_email, limit: 1 });
+          if (existing.data.length > 0) {
+            stripeCustomerId = existing.data[0].id;
+          } else {
+            const customer = await stripe.customers.create({
+              email:  customer_email,
+              name:   customer_name,
+              phone:  customer_phone || undefined,
+              metadata: { source: "subscription_v1" },
+            });
+            stripeCustomerId = customer.id;
+          }
+
+          // Attach payment method to customer (idempotent if already attached)
+          const pm = await stripe.paymentMethods.retrieve(stripe_payment_method_id);
+          if (!pm.customer) {
+            await stripe.paymentMethods.attach(stripe_payment_method_id, { customer: stripeCustomerId });
+          }
+
+          // Set as default payment method
+          await stripe.customers.update(stripeCustomerId, {
+            invoice_settings: { default_payment_method: stripe_payment_method_id },
+          });
+        } catch (stripeErr: any) {
+          console.error("[subscriptions] Stripe setup error:", stripeErr.message);
+          // Don't hard-fail — store sub without Stripe IDs if Stripe is unavailable
+        }
+      }
+
+      // ── Default next_visit_at to 14 days from now if not supplied ─────────
+      const nextVisitAt = next_visit_at
+        ? new Date(next_visit_at).toISOString()
+        : new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+
+      // ── Insert into subscriptions table ───────────────────────────────────
+      if (!hsSupa) {
+        return res.status(503).json({ error: "Database not available." });
+      }
+
+      const { data: newSub, error: insertErr } = await hsSupa
+        .from("subscriptions")
+        .insert({
+          customer_email,
+          customer_name,
+          customer_phone:           customer_phone || null,
+          service_address,
+          service_type,
+          sqft:                     sqftNum,
+          frequency,
+          status:                   insertStatus,
+          stripe_customer_id:       stripeCustomerId,
+          stripe_payment_method_id: stripe_payment_method_id || null,
+          discount_pct:             15.00,
+          founders_lock:            true,
+          locked_base_price_cents,
+          next_visit_at:            insertStatus === "active" ? nextVisitAt : null,
+        })
+        .select("id, status")
+        .single();
+
+      if (insertErr || !newSub) {
+        console.error("[subscriptions] Insert error:", insertErr?.message);
+        return res.status(500).json({ error: insertErr?.message || "Failed to create subscription." });
+      }
+
+      // ── Build response ────────────────────────────────────────────────────
+      const response: Record<string, unknown> = {
+        subscription_id: newSub.id,
+        status:          newSub.status,
+        discount_pct:    15,
+        locked_base_price_cents,
+        discounted_visit_cents: applySubscriptionDiscount(locked_base_price_cents, 15),
+      };
+
+      if (isWaitlisted) {
+        response.position = waitlisted + 1;
+      }
+
+      res.status(201).json(response);
+
+    } catch (err: any) {
+      console.error("[subscriptions] POST error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── POST /api/admin/subscriptions/:id/charge-next-visit — manual test ────
+  // Sprint D scaffold: trigger per-visit billing manually for testing.
+  // Full cron automation is deferred to Sprint F.
+  app.post("/api/admin/subscriptions/:id/charge-next-visit", requireAuth, async (req, res) => {
+    try {
+      const subscriptionId = req.params.id;
+      const scheduledAt    = req.body.scheduled_at || new Date().toISOString();
+
+      const result = await createVisitForSubscription(subscriptionId, scheduledAt);
+
+      res.json({
+        success:          true,
+        subscription_id:  subscriptionId,
+        job_id:           result.jobId,
+        payment_intent_id: result.paymentIntentId,
+        charged_cents:    result.chargedCents,
+      });
+    } catch (err: any) {
+      console.error("[admin/charge-next-visit]", err.message);
+      res.status(500).json({ error: err.message });
     }
   });
 }
