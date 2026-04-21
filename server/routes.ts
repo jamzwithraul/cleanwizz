@@ -248,12 +248,13 @@ const OVEN_PRICE = 100;            // in-oven cleaning add-on
 const LAUNDRY_PRICE = 100;         // laundry wash & fold add-on
 const HST_RATE = 0.13;             // Ontario HST
 
-type ServiceType = "standard" | "deep" | "moveout";
+type ServiceType = "standard" | "deep" | "moveout" | "micro";
 
 const SERVICE_PRICING: Record<ServiceType, { minimum: number; sqftRate: number; label: string }> = {
   standard: { minimum: 289, sqftRate: 0.29, label: "Standard Clean" },
   deep:     { minimum: 499, sqftRate: 0.39, label: "Deep Clean" },
   moveout:  { minimum: 699, sqftRate: 0.49, label: "Move-In/Move-Out Clean" },
+  micro:    { minimum: 199, sqftRate: 0,    label: "Micro Clean" },
 };
 
 // Flat contractor payouts (per job, regardless of quote total)
@@ -261,6 +262,7 @@ const CONTRACTOR_PAYOUT: Record<ServiceType, number> = {
   standard: 160,
   deep:     240,
   moveout:  320,
+  micro:    120,
 };
 
 // Non-stacking discount rates. Take the larger of the eligible discounts.
@@ -304,12 +306,43 @@ export interface PricingBreakdown {
 }
 
 function resolveService(serviceType: string): ServiceType {
-  if (serviceType === "deep" || serviceType === "moveout" || serviceType === "standard") return serviceType;
+  if (serviceType === "deep" || serviceType === "moveout" || serviceType === "standard" || serviceType === "micro") return serviceType;
   return "standard";
 }
 
 export function computePricing(input: ComputePricingInput): PricingBreakdown {
   const service = resolveService(input.serviceType);
+
+  // Micro Clean: flat $199, no sqft upgrade, max 800 sqft
+  if (service === "micro") {
+    const sqft = Math.max(0, Math.floor(input.squareFootage || 0));
+    if (sqft > 800) {
+      throw Object.assign(new Error("Micro Clean is only available for homes up to 800 sq ft."), { statusCode: 400 });
+    }
+    const flatPrice = 199;
+    const hst = round2(flatPrice * HST_RATE);
+    const total = round2(flatPrice + hst);
+    return {
+      serviceType: service,
+      minimum: flatPrice,
+      sqftRate: 0,
+      sqftPrice: 0,
+      basePrice: flatPrice,
+      discountablePortion: 0,
+      discountPct: 0,
+      discountLabel: null,
+      discount: 0,
+      discountedBase: flatPrice,
+      addOnsTotal: 0,
+      subtotal: flatPrice,
+      hst,
+      total,
+      lineItems: [
+        { label: "Micro Clean — flat rate (homes up to 800 sq ft)", quantity: 1, unitPrice: flatPrice, lineTotal: flatPrice, category: "base" },
+      ],
+    };
+  }
+
   const sqft = Math.max(0, Math.floor(input.squareFootage || 0));
   const { minimum, sqftRate, label } = SERVICE_PRICING[service];
   const s = input.settings || {};
