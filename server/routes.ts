@@ -2381,10 +2381,60 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         service_address,
         service_type,
         sqft,
-        frequency     = "biweekly",
+        frequency         = "biweekly",
         stripe_payment_method_id,
         next_visit_at,
+        waitlist_only     = false,
       } = req.body;
+
+      // ── Waitlist-only path: minimal validation, no Stripe, status=waitlisted
+      if (waitlist_only) {
+        if (!customer_email) {
+          return res.status(400).json({ error: "customer_email is required for waitlist signup." });
+        }
+        if (!hsSupa) {
+          return res.status(503).json({ error: "Database not available." });
+        }
+        const { count: waitlisted } = await hsSupa
+          .from("subscriptions")
+          .select("*", { count: "exact", head: true })
+          .eq("status", "waitlisted");
+
+        const position = (waitlisted ?? 0) + 1;
+
+        const { data: newSub, error: insertErr } = await hsSupa
+          .from("subscriptions")
+          .insert({
+            customer_email,
+            customer_name:             customer_name  || customer_email,
+            customer_phone:            customer_phone || null,
+            service_address:           service_address || "",
+            service_type:              service_type    || "standard",
+            sqft:                      sqft ? parseInt(sqft, 10) : 0,
+            frequency:                 "biweekly",
+            status:                    "waitlisted",
+            stripe_customer_id:        null,
+            stripe_payment_method_id:  null,
+            discount_pct:              15.00,
+            founders_lock:             true,
+            locked_base_price_cents:   0,
+            next_visit_at:             null,
+          })
+          .select("id, status")
+          .single();
+
+        if (insertErr || !newSub) {
+          console.error("[subscriptions/waitlist] Insert error:", insertErr?.message);
+          return res.status(500).json({ error: insertErr?.message || "Failed to join waitlist." });
+        }
+
+        return res.status(201).json({
+          subscription_id: newSub.id,
+          status:          "waitlisted",
+          position,
+          waitlist_total:  position,
+        });
+      }
 
       // ── Validate required fields ─────────────────────────────────────────
       if (!customer_email || !customer_name || !service_address || !service_type || !sqft) {
@@ -2539,6 +2589,162 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       res.status(500).json({ error: err.message });
     }
   });
+  // ── GET /api/admin/subscriptions/waitlist — ordered waitlist ─────────────
+  // Sprint F: returns all waitlisted subscribers ordered by created_at.
+  app.get("/api/admin/subscriptions/waitlist", requireAuth, async (_req, res) => {
+    try {
+      if (!hsSupa) return res.status(503).json({ error: "Database not available." });
+
+      const { data, error } = await hsSupa
+        .from("subscriptions")
+        .select("id, customer_email, customer_phone, customer_name, service_address, service_type, sqft, created_at")
+        .eq("status", "waitlisted")
+        .order("created_at", { ascending: true });
+
+      if (error) throw error;
+
+      res.json({
+        waitlist: data ?? [],
+        total:    (data ?? []).length,
+      });
+    } catch (err: any) {
+      console.error("[admin/subscriptions/waitlist]", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── POST /api/admin/subscriptions/:id/promote — promote waitlisted → active
+  // Sprint F: moves a waitlisted subscription to active.
+  // Requires a Stripe payment_method_id in the request body so the customer
+  // can be billed on future visits.
+  app.post("/api/admin/subscriptions/:id/promote", requireAuth, async (req, res) => {
+    try {
+      const subscriptionId     = req.params.id;
+      const { payment_method_id } = req.body;
+
+      if (!payment_method_id) {
+        return res.status(400).json({ error: "payment_method_id is required to promote a subscription." });
+      }
+      if (!hsSupa) return res.status(503).json({ error: "Database not available." });
+
+      // Load the subscription
+      const { data: sub, error: loadErr } = await hsSupa
+        .from("subscriptions")
+        .select("*")
+        .eq("id", subscriptionId)
+        .single();
+
+      if (loadErr || !sub) {
+        return res.status(404).json({ error: "Subscription not found." });
+      }
+      if (sub.status !== "waitlisted") {
+        return res.status(409).json({
+          error: `Subscription is '${sub.status}', not 'waitlisted'. Only waitlisted subscriptions can be promoted.`,
+        });
+      }
+
+      // Verify seat capacity hasn\'t been exceeded
+      const { active } = await getSubscriptionCounts();
+      if (active >= SUBSCRIPTION_SEAT_CAP) {
+        return res.status(409).json({
+          error: `Seat cap of ${SUBSCRIPTION_SEAT_CAP} reached. Cannot promote until a seat opens.`,
+          active,
+          capacity: SUBSCRIPTION_SEAT_CAP,
+        });
+      }
+
+      // Create or retrieve Stripe customer, then attach the payment method
+      let stripeCustomerId: string | null = sub.stripe_customer_id ?? null;
+
+      if (stripe) {
+        try {
+          if (!stripeCustomerId) {
+            const existing = await stripe.customers.list({ email: sub.customer_email, limit: 1 });
+            if (existing.data.length > 0) {
+              stripeCustomerId = existing.data[0].id;
+            } else {
+              const customer = await stripe.customers.create({
+                email:  sub.customer_email,
+                name:   sub.customer_name,
+                phone:  sub.customer_phone || undefined,
+                metadata: { source: "subscription_v1_promote" },
+              });
+              stripeCustomerId = customer.id;
+            }
+          }
+
+          // Attach payment method if not already attached
+          const pm = await stripe.paymentMethods.retrieve(payment_method_id);
+          if (!pm.customer) {
+            await stripe.paymentMethods.attach(payment_method_id, { customer: stripeCustomerId });
+          }
+          await stripe.customers.update(stripeCustomerId, {
+            invoice_settings: { default_payment_method: payment_method_id },
+          });
+        } catch (stripeErr: any) {
+          console.error("[admin/promote] Stripe error:", stripeErr.message);
+          return res.status(502).json({ error: `Stripe error: ${stripeErr.message}` });
+        }
+      }
+
+      // Compute next_visit_at (14 days from now)
+      const nextVisitAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+
+      // Update subscription
+      const { data: updated, error: updateErr } = await hsSupa
+        .from("subscriptions")
+        .update({
+          status:                   "active",
+          stripe_customer_id:       stripeCustomerId,
+          stripe_payment_method_id: payment_method_id,
+          next_visit_at:            nextVisitAt,
+        })
+        .eq("id", subscriptionId)
+        .select("id, status, next_visit_at")
+        .single();
+
+      if (updateErr || !updated) {
+        throw new Error(updateErr?.message || "Failed to promote subscription.");
+      }
+
+      res.json({
+        success:         true,
+        subscription_id: subscriptionId,
+        status:          updated.status,
+        next_visit_at:   updated.next_visit_at,
+        stripe_customer_id: stripeCustomerId,
+      });
+    } catch (err: any) {
+      console.error("[admin/subscriptions/promote]", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── POST /api/cron/billing-sweep — day-of billing cron endpoint ─────────────
+  // Protected by X-Cron-Secret header (CRON_SHARED_SECRET env var).
+  // Call this from Railway cron, GitHub Actions schedule, or curl:
+  //   curl -X POST https://api.harrietscleaning.ca/api/cron/billing-sweep \
+  //        -H "X-Cron-Secret: $CRON_SHARED_SECRET"
+  app.post("/api/cron/billing-sweep", async (req, res) => {
+    const cronSecret = process.env.CRON_SHARED_SECRET;
+    const provided   = req.headers["x-cron-secret"] as string | undefined;
+
+    if (cronSecret && provided !== cronSecret) {
+      return res.status(401).json({ error: "Unauthorized — invalid or missing X-Cron-Secret header." });
+    }
+
+    try {
+      const { runDailyBillingSweep } = await import("./cron/subscription-billing.js");
+      const result = await runDailyBillingSweep();
+
+      console.log("[cron/billing-sweep] Sweep complete:", result);
+      res.json({ success: true, ...result });
+    } catch (err: any) {
+      console.error("[cron/billing-sweep]", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
