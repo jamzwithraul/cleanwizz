@@ -11,6 +11,7 @@ import { createClient } from "@supabase/supabase-js";
 import { requireAuth, requireAuthOrInternal, ipRateLimit } from "./middleware/requireAuth";
 import { validateBookingSlots, generateBookingReference, type SlotInput } from "./booking";
 import { buildPayoutRecord } from "./payouts";
+import { recordLateSkip, LATE_SKIP_THRESHOLD_MS } from "./subscriptions";
 
 // ── Harriet's Spotless Supabase (contractor data) ──────────────────────────────────
 const HS_SUPABASE_URL  = process.env.HS_SUPABASE_URL  || "https://gjfeqnfmwbsfwnbepwvu.supabase.co";
@@ -251,9 +252,9 @@ const HST_RATE = 0.13;             // Ontario HST
 type ServiceType = "standard" | "deep" | "moveout";
 
 const SERVICE_PRICING: Record<ServiceType, { minimum: number; sqftRate: number; label: string }> = {
-  standard: { minimum: 289, sqftRate: 0.29, label: "Standard Clean" },
-  deep:     { minimum: 499, sqftRate: 0.39, label: "Deep Clean" },
-  moveout:  { minimum: 699, sqftRate: 0.49, label: "Move-In/Move-Out Clean" },
+  standard: { minimum: 249, sqftRate: 0.25, label: "Standard Clean" },
+  deep:     { minimum: 429, sqftRate: 0.35, label: "Deep Clean" },
+  moveout:  { minimum: 599, sqftRate: 0.45, label: "Move-In/Move-Out Clean" },
 };
 
 // Flat contractor payouts (per job, regardless of quote total)
@@ -2309,6 +2310,143 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     } catch (err: any) {
       console.error("[job-complete] Pipeline error:", err?.message || err, err?.stack);
       res.status(500).json({ error: err.message || "Job completion pipeline failed." });
+    }
+  });
+
+  // ── POST /api/admin/jobs/:id/cancel — Admin-only job cancellation ─────────
+  //
+  // Records cancellation intent and computes the fee (0 / 50% / 100% of job
+  // total). Does NOT auto-charge Stripe in this sprint — admin manually charges
+  // via the Stripe dashboard.
+  //
+  // TODO: Auto-charge via Stripe is a follow-up sprint — admin can manually
+  //       charge via Stripe dashboard for now.
+  app.post("/api/admin/jobs/:id/cancel", requireAuth, async (req, res) => {
+    try {
+      const { id: jobId } = req.params;
+      const { reason, fee_pct } = req.body as { reason?: string; fee_pct?: number };
+
+      if (typeof fee_pct !== "number" || ![0, 50, 100].includes(fee_pct)) {
+        return res.status(400).json({ error: "fee_pct must be 0, 50, or 100." });
+      }
+      if (!reason || typeof reason !== "string" || reason.trim().length === 0) {
+        return res.status(400).json({ error: "reason is required." });
+      }
+      if (!hsSupa) {
+        return res.status(503).json({ error: "Database unavailable." });
+      }
+
+      // Fetch the job so we can compute the fee from the recorded total
+      const { data: job, error: fetchErr } = await hsSupa
+        .from("jobs")
+        .select("id, total_cents, cancellation_fee_cents, cancelled_at")
+        .eq("id", jobId)
+        .single();
+
+      if (fetchErr || !job) {
+        return res.status(404).json({ error: "Job not found." });
+      }
+      if (job.cancelled_at) {
+        return res.status(409).json({ error: "Job is already cancelled." });
+      }
+
+      const jobTotalCents: number = job.total_cents ?? 0;
+      const feeCents = Math.round((jobTotalCents * fee_pct) / 100);
+
+      const { data: updated, error: updateErr } = await hsSupa
+        .from("jobs")
+        .update({
+          cancelled_at:           new Date().toISOString(),
+          cancellation_reason:    reason.trim(),
+          cancellation_fee_cents: feeCents,
+        })
+        .eq("id", jobId)
+        .select()
+        .single();
+
+      if (updateErr || !updated) {
+        console.error("[admin/cancel-job] Update error:", updateErr?.message);
+        return res.status(500).json({ error: "Failed to record cancellation." });
+      }
+
+      return res.json({
+        job: updated,
+        fee_pct,
+        cancellation_fee_cents: feeCents,
+        note: "Fee recorded. Stripe auto-charge is a follow-up sprint — charge manually via Stripe dashboard.",
+      });
+    } catch (err: any) {
+      console.error("[admin/cancel-job] Error:", err?.message || err);
+      return res.status(500).json({ error: err.message || "Internal server error." });
+    }
+  });
+
+  // ── POST /api/me/subscription/skip-next — Customer portal: skip next visit ─
+  //
+  // Authenticated customer endpoint. Skips the next scheduled visit.
+  // If the skip is made less than 48 hours before next_visit_at, increments
+  // the skipped_visits_late counter via recordLateSkip().
+  app.post("/api/me/subscription/skip-next", requireAuth, async (req, res) => {
+    try {
+      if (!hsSupa) {
+        return res.status(503).json({ error: "Database unavailable." });
+      }
+      if (!req.user?.email) {
+        return res.status(401).json({ error: "Unauthorized." });
+      }
+
+      // Look up the active subscription belonging to the authenticated user
+      const { data: sub, error: subErr } = await hsSupa
+        .from("subscriptions")
+        .select("id, status, next_visit_at, skipped_visits_late")
+        .eq("customer_email", req.user.email)
+        .in("status", ["active", "paused"])
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .single();
+
+      if (subErr || !sub) {
+        return res.status(404).json({ error: "No active subscription found for this account." });
+      }
+      if (!sub.next_visit_at) {
+        return res.status(400).json({ error: "No upcoming visit is scheduled on this subscription." });
+      }
+
+      const nextVisitMs = new Date(sub.next_visit_at).getTime();
+      const msUntilVisit = nextVisitMs - Date.now();
+      const isLate = msUntilVisit < LATE_SKIP_THRESHOLD_MS;
+
+      // Advance next_visit_at by 14 days (bi-weekly cycle)
+      const newNextVisit = new Date(nextVisitMs + 14 * 24 * 60 * 60 * 1000).toISOString();
+
+      const { error: updateErr } = await hsSupa
+        .from("subscriptions")
+        .update({ next_visit_at: newNextVisit })
+        .eq("id", sub.id);
+
+      if (updateErr) {
+        console.error("[me/subscription/skip-next] Update error:", updateErr.message);
+        return res.status(500).json({ error: "Failed to skip visit." });
+      }
+
+      // If the skip is within the 48-hour window, increment the late-skip counter
+      let lateSkipCount: number | null = null;
+      if (isLate) {
+        lateSkipCount = await recordLateSkip(sub.id);
+      }
+
+      return res.json({
+        skipped:         true,
+        was_late:        isLate,
+        next_visit_at:   newNextVisit,
+        late_skip_count: lateSkipCount,
+        note: isLate
+          ? "Skip recorded within 48-hour window. A 50% fee may apply — admin has been notified."
+          : "Skip recorded with sufficient notice. No fee applies.",
+      });
+    } catch (err: any) {
+      console.error("[me/subscription/skip-next] Error:", err?.message || err);
+      return res.status(500).json({ error: err.message || "Internal server error." });
     }
   });
 }
