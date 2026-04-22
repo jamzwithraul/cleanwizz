@@ -50,13 +50,16 @@ async function triggerCascadeAssignment(opts: {
   const windowMins = hoursAway >= 24 ? 120 : 30;
 
   // Get approved contractors in round-robin order
+  // Sprint I gate: only contractors with signwell_reclean_clause_version >= 1
+  // can receive new job assignments.
   const { data: state } = await hsSupa.from("cascade_state").select("last_contractor_index").eq("id", "singleton").single();
   const lastIdx = state?.last_contractor_index ?? 0;
 
   const { data: contractors } = await hsSupa
     .from("contractor_applications")
-    .select("id, full_name, email")
+    .select("id, full_name, email, signwell_reclean_clause_version")
     .eq("status", "approved")
+    .gte("signwell_reclean_clause_version", 1)
     .order("cascade_order", { ascending: true });
 
   if (!contractors || contractors.length === 0) {
