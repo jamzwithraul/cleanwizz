@@ -15,7 +15,7 @@
  */
 
 const SIGNWELL_API_KEY = process.env.SIGNWELL_API_KEY || "";
-const SIGNWELL_BASE    = "https://app.signwell.com/api/v1";
+const SIGNWELL_BASE    = "https://www.signwell.com/api/v1";
 
 /** Current reclean clause schema version.  Bump when the template changes. */
 export const RECLEAN_CLAUSE_VERSION = 1;
