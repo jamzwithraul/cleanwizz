@@ -11,6 +11,7 @@ import { createClient } from "@supabase/supabase-js";
 import { requireAuth, requireAuthOrInternal, ipRateLimit } from "./middleware/requireAuth";
 import { validateBookingSlots, generateBookingReference, type SlotInput } from "./booking";
 import { buildPayoutRecord } from "./payouts";
+import { recordLateSkip, LATE_SKIP_THRESHOLD_MS } from "./subscriptions";
 
 // ── Harriet's Spotless Supabase (contractor data) ──────────────────────────────────
 const HS_SUPABASE_URL  = process.env.HS_SUPABASE_URL  || "https://gjfeqnfmwbsfwnbepwvu.supabase.co";
@@ -49,13 +50,16 @@ async function triggerCascadeAssignment(opts: {
   const windowMins = hoursAway >= 24 ? 120 : 30;
 
   // Get approved contractors in round-robin order
+  // Sprint I gate: only contractors with signwell_reclean_clause_version >= 1
+  // can receive new job assignments.
   const { data: state } = await hsSupa.from("cascade_state").select("last_contractor_index").eq("id", "singleton").single();
   const lastIdx = state?.last_contractor_index ?? 0;
 
   const { data: contractors } = await hsSupa
     .from("contractor_applications")
-    .select("id, full_name, email")
+    .select("id, full_name, email, signwell_reclean_clause_version")
     .eq("status", "approved")
+    .gte("signwell_reclean_clause_version", 1)
     .order("cascade_order", { ascending: true });
 
   if (!contractors || contractors.length === 0) {
@@ -251,9 +255,9 @@ const HST_RATE = 0.13;             // Ontario HST
 type ServiceType = "standard" | "deep" | "moveout" | "micro";
 
 const SERVICE_PRICING: Record<ServiceType, { minimum: number; sqftRate: number; label: string }> = {
-  standard: { minimum: 289, sqftRate: 0.29, label: "Standard Clean" },
-  deep:     { minimum: 499, sqftRate: 0.39, label: "Deep Clean" },
-  moveout:  { minimum: 699, sqftRate: 0.49, label: "Move-In/Move-Out Clean" },
+  standard: { minimum: 249, sqftRate: 0.25, label: "Standard Clean" },
+  deep:     { minimum: 429, sqftRate: 0.35, label: "Deep Clean" },
+  moveout:  { minimum: 599, sqftRate: 0.45, label: "Move-In/Move-Out Clean" },
   micro:    { minimum: 199, sqftRate: 0,    label: "Micro Clean" },
 };
 
@@ -2537,6 +2541,246 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     } catch (err: any) {
       console.error("[admin/charge-next-visit]", err.message);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Sprint J — Contractor agreement status endpoints
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * GET /api/me/contractor-agreement-status
+   * Returns the signed agreement details for the authenticated contractor.
+   * Used by ContractorPortal.tsx to populate the "My Agreement" card.
+   */
+  app.get("/api/me/contractor-agreement-status", requireAuth, async (req, res) => {
+    try {
+      if (!hsSupa) return res.status(503).json({ error: "Database unavailable." });
+
+      const { data: contractor, error: cErr } = await hsSupa
+        .from("contractor_applications")
+        .select(
+          "id, full_name, signwell_signed_at, signwell_reclean_clause_version, signwell_document_id",
+        )
+        .eq("email", req.user!.email)
+        .maybeSingle();
+
+      if (cErr || !contractor) {
+        return res.status(404).json({ error: "Contractor record not found." });
+      }
+
+      // If a SignWell document id is on file, attempt to fetch the download URL.
+      let downloadUrl: string | null = null;
+      const docId: string | null = contractor.signwell_document_id ?? null;
+      if (docId) {
+        try {
+          const { getSignwellDocument } = await import("./signwell");
+          const doc = await getSignwellDocument(docId);
+          // SignWell returns `completed_at` when fully signed; download URL lives
+          // at doc.files[0].url (varies by plan) or doc.download_url.
+          downloadUrl =
+            doc?.download_url ??
+            (Array.isArray(doc?.files) && doc.files[0]?.url ? doc.files[0].url : null);
+        } catch {
+          // Non-fatal: we just won't surface a download link
+        }
+      }
+
+      const clauseVersion: number = contractor.signwell_reclean_clause_version ?? 0;
+
+      return res.json({
+        version:                "Harriet's Contractor Agreement v1.0",
+        signed_at:              contractor.signwell_signed_at ?? null,
+        reclean_clause_version: clauseVersion,
+        download_url:           downloadUrl,
+      });
+    } catch (err: any) {
+      console.error("[agreement-status] Error:", err?.message);
+      return res.status(500).json({ error: err.message || "Failed to fetch agreement status." });
+    }
+  });
+
+  /**
+   * POST /api/me/resend-agreement
+   * Contractor-self-serve re-signature request.
+   * Sends a new SignWell signing email to the authenticated contractor.
+   */
+  app.post("/api/me/resend-agreement", requireAuth, async (req, res) => {
+    try {
+      if (!hsSupa) return res.status(503).json({ error: "Database unavailable." });
+
+      const { data: contractor, error: cErr } = await hsSupa
+        .from("contractor_applications")
+        .select("id, full_name, email, signwell_reclean_clause_version")
+        .eq("email", req.user!.email)
+        .maybeSingle();
+
+      if (cErr || !contractor) {
+        return res.status(404).json({ error: "Contractor record not found." });
+      }
+
+      const { sendContractorAgreement } = await import("./signwell");
+      const { documentId, signingUrl } = await sendContractorAgreement({
+        contractorId:    contractor.id,
+        contractorName:  contractor.full_name,
+        contractorEmail: contractor.email,
+        isResend:        true,
+      });
+
+      // Record the new document id so status can fetch the download URL later
+      await hsSupa
+        .from("contractor_applications")
+        .update({ signwell_resend_document_id: documentId, updated_at: new Date().toISOString() })
+        .eq("id", contractor.id);
+
+      console.log(`[agreement] Self-serve resend to ${contractor.email}, document=${documentId}`);
+
+      return res.json({
+        success:    true,
+        documentId,
+        signingUrl,
+        message:    "Re-signature request sent. Check your email for the signing link.",
+      });
+    } catch (err: any) {
+      console.error("[agreement] Resend error:", err?.message);
+      return res.status(500).json({ error: err.message || "Failed to send re-signature request." });
+    }
+  });
+
+  // ── POST /api/admin/jobs/:id/cancel — Admin-only job cancellation ─────────
+  //
+  // Records cancellation intent and computes the fee (0 / 50% / 100% of job
+  // total). Does NOT auto-charge Stripe in this sprint — admin manually charges
+  // via the Stripe dashboard.
+  //
+  // TODO: Auto-charge via Stripe is a follow-up sprint — admin can manually
+  //       charge via Stripe dashboard for now.
+  app.post("/api/admin/jobs/:id/cancel", requireAuth, async (req, res) => {
+    try {
+      const { id: jobId } = req.params;
+      const { reason, fee_pct } = req.body as { reason?: string; fee_pct?: number };
+
+      if (typeof fee_pct !== "number" || ![0, 50, 100].includes(fee_pct)) {
+        return res.status(400).json({ error: "fee_pct must be 0, 50, or 100." });
+      }
+      if (!reason || typeof reason !== "string" || reason.trim().length === 0) {
+        return res.status(400).json({ error: "reason is required." });
+      }
+      if (!hsSupa) {
+        return res.status(503).json({ error: "Database unavailable." });
+      }
+
+      // Fetch the job so we can compute the fee from the recorded total
+      const { data: job, error: fetchErr } = await hsSupa
+        .from("jobs")
+        .select("id, total_cents, cancellation_fee_cents, cancelled_at")
+        .eq("id", jobId)
+        .single();
+
+      if (fetchErr || !job) {
+        return res.status(404).json({ error: "Job not found." });
+      }
+      if (job.cancelled_at) {
+        return res.status(409).json({ error: "Job is already cancelled." });
+      }
+
+      const jobTotalCents: number = job.total_cents ?? 0;
+      const feeCents = Math.round((jobTotalCents * fee_pct) / 100);
+
+      const { data: updated, error: updateErr } = await hsSupa
+        .from("jobs")
+        .update({
+          cancelled_at:           new Date().toISOString(),
+          cancellation_reason:    reason.trim(),
+          cancellation_fee_cents: feeCents,
+        })
+        .eq("id", jobId)
+        .select()
+        .single();
+
+      if (updateErr || !updated) {
+        console.error("[admin/cancel-job] Update error:", updateErr?.message);
+        return res.status(500).json({ error: "Failed to record cancellation." });
+      }
+
+      return res.json({
+        job: updated,
+        fee_pct,
+        cancellation_fee_cents: feeCents,
+        note: "Fee recorded. Stripe auto-charge is a follow-up sprint — charge manually via Stripe dashboard.",
+      });
+    } catch (err: any) {
+      console.error("[admin/cancel-job] Error:", err?.message || err);
+      return res.status(500).json({ error: err.message || "Internal server error." });
+    }
+  });
+
+  // ── POST /api/me/subscription/skip-next — Customer portal: skip next visit ─
+  //
+  // Authenticated customer endpoint. Skips the next scheduled visit.
+  // If the skip is made less than 48 hours before next_visit_at, increments
+  // the skipped_visits_late counter via recordLateSkip().
+  app.post("/api/me/subscription/skip-next", requireAuth, async (req, res) => {
+    try {
+      if (!hsSupa) {
+        return res.status(503).json({ error: "Database unavailable." });
+      }
+      if (!req.user?.email) {
+        return res.status(401).json({ error: "Unauthorized." });
+      }
+
+      // Look up the active subscription belonging to the authenticated user
+      const { data: sub, error: subErr } = await hsSupa
+        .from("subscriptions")
+        .select("id, status, next_visit_at, skipped_visits_late")
+        .eq("customer_email", req.user.email)
+        .in("status", ["active", "paused"])
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .single();
+
+      if (subErr || !sub) {
+        return res.status(404).json({ error: "No active subscription found for this account." });
+      }
+      if (!sub.next_visit_at) {
+        return res.status(400).json({ error: "No upcoming visit is scheduled on this subscription." });
+      }
+
+      const nextVisitMs = new Date(sub.next_visit_at).getTime();
+      const msUntilVisit = nextVisitMs - Date.now();
+      const isLate = msUntilVisit < LATE_SKIP_THRESHOLD_MS;
+
+      // Advance next_visit_at by 14 days (bi-weekly cycle)
+      const newNextVisit = new Date(nextVisitMs + 14 * 24 * 60 * 60 * 1000).toISOString();
+
+      const { error: updateErr } = await hsSupa
+        .from("subscriptions")
+        .update({ next_visit_at: newNextVisit })
+        .eq("id", sub.id);
+
+      if (updateErr) {
+        console.error("[me/subscription/skip-next] Update error:", updateErr.message);
+        return res.status(500).json({ error: "Failed to skip visit." });
+      }
+
+      // If the skip is within the 48-hour window, increment the late-skip counter
+      let lateSkipCount: number | null = null;
+      if (isLate) {
+        lateSkipCount = await recordLateSkip(sub.id);
+      }
+
+      return res.json({
+        skipped:         true,
+        was_late:        isLate,
+        next_visit_at:   newNextVisit,
+        late_skip_count: lateSkipCount,
+        note: isLate
+          ? "Skip recorded within 48-hour window. A 50% fee may apply — admin has been notified."
+          : "Skip recorded with sufficient notice. No fee applies.",
+      });
+    } catch (err: any) {
+      console.error("[me/subscription/skip-next] Error:", err?.message || err);
+      return res.status(500).json({ error: err.message || "Internal server error." });
     }
   });
 }

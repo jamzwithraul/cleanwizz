@@ -99,14 +99,14 @@ describe("Subscription discount math (15% off locked base)", () => {
   });
 
   it("locked_base_price_cents is derived from computePricing().subtotal", () => {
-    // Standard 2000 sqft: sqftPrice = 2000 * 0.29 = 580; basePrice = max(289, 580) = 580
+    // Standard 2000 sqft: sqftPrice = 2000 * 0.25 = 500; basePrice = max(249, 500) = 500
     const pricing = computePricing({ serviceType: "standard", squareFootage: 2000 });
     const lockedCents = Math.round(pricing.subtotal * 100);
-    expect(lockedCents).toBe(58000);
+    expect(lockedCents).toBe(50000);
 
     const discountedCents = applySubscriptionDiscount(lockedCents, 15);
-    // $580 * 0.85 = $493
-    expect(discountedCents).toBe(49300);
+    // $500 * 0.85 = $425
+    expect(discountedCents).toBe(42500);
   });
 });
 
@@ -189,11 +189,11 @@ describe("service_type validation", () => {
 
 describe("End-to-end pricing → locked base → subscription discount", () => {
   const cases: Array<{ label: string; serviceType: string; sqft: number; expectedDiscountedCents: number }> = [
-    { label: "1000 sqft Standard",  serviceType: "standard", sqft: 1000,  expectedDiscountedCents: 24650 }, // $290 * 0.85 = $246.50
-    { label: "1500 sqft Standard",  serviceType: "standard", sqft: 1500,  expectedDiscountedCents: 36975 }, // $435 * 0.85 = $369.75
-    { label: "2000 sqft Standard",  serviceType: "standard", sqft: 2000,  expectedDiscountedCents: 49300 }, // $580 * 0.85 = $493.00
+    { label: "1000 sqft Standard",  serviceType: "standard", sqft: 1000,  expectedDiscountedCents: 21250 }, // max($249, 1000*0.25=$250) = $250; $250 * 0.85 = $212.50
+    { label: "1500 sqft Standard",  serviceType: "standard", sqft: 1500,  expectedDiscountedCents: 31875 }, // $375 * 0.85 = $318.75
+    { label: "2000 sqft Standard",  serviceType: "standard", sqft: 2000,  expectedDiscountedCents: 42500 }, // $500 * 0.85 = $425.00
     { label: "Micro 500 sqft",      serviceType: "micro",    sqft: 500,   expectedDiscountedCents: 16915 }, // $199 * 0.85 = $169.15
-    { label: "1500 sqft Deep",      serviceType: "deep",     sqft: 1500,  expectedDiscountedCents: 49725 }, // $585 * 0.85 = $497.25
+    { label: "1500 sqft Deep",      serviceType: "deep",     sqft: 1500,  expectedDiscountedCents: 44625 }, // max($429, 1500*0.35=$525) = $525; $525 * 0.85 = $446.25
   ];
 
   for (const c of cases) {
