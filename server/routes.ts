@@ -2311,6 +2311,109 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       res.status(500).json({ error: err.message || "Job completion pipeline failed." });
     }
   });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Sprint J — Contractor agreement status endpoints
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * GET /api/me/contractor-agreement-status
+   * Returns the signed agreement details for the authenticated contractor.
+   * Used by ContractorPortal.tsx to populate the "My Agreement" card.
+   */
+  app.get("/api/me/contractor-agreement-status", requireAuth, async (req, res) => {
+    try {
+      if (!hsSupa) return res.status(503).json({ error: "Database unavailable." });
+
+      const { data: contractor, error: cErr } = await hsSupa
+        .from("contractor_applications")
+        .select(
+          "id, full_name, signwell_signed_at, signwell_reclean_clause_version, signwell_document_id",
+        )
+        .eq("email", req.user!.email)
+        .maybeSingle();
+
+      if (cErr || !contractor) {
+        return res.status(404).json({ error: "Contractor record not found." });
+      }
+
+      // If a SignWell document id is on file, attempt to fetch the download URL.
+      let downloadUrl: string | null = null;
+      const docId: string | null = contractor.signwell_document_id ?? null;
+      if (docId) {
+        try {
+          const { getSignwellDocument } = await import("./signwell");
+          const doc = await getSignwellDocument(docId);
+          // SignWell returns `completed_at` when fully signed; download URL lives
+          // at doc.files[0].url (varies by plan) or doc.download_url.
+          downloadUrl =
+            doc?.download_url ??
+            (Array.isArray(doc?.files) && doc.files[0]?.url ? doc.files[0].url : null);
+        } catch {
+          // Non-fatal: we just won't surface a download link
+        }
+      }
+
+      const clauseVersion: number = contractor.signwell_reclean_clause_version ?? 0;
+
+      return res.json({
+        version:                "Harriet's Contractor Agreement v1.0",
+        signed_at:              contractor.signwell_signed_at ?? null,
+        reclean_clause_version: clauseVersion,
+        download_url:           downloadUrl,
+      });
+    } catch (err: any) {
+      console.error("[agreement-status] Error:", err?.message);
+      return res.status(500).json({ error: err.message || "Failed to fetch agreement status." });
+    }
+  });
+
+  /**
+   * POST /api/me/resend-agreement
+   * Contractor-self-serve re-signature request.
+   * Sends a new SignWell signing email to the authenticated contractor.
+   */
+  app.post("/api/me/resend-agreement", requireAuth, async (req, res) => {
+    try {
+      if (!hsSupa) return res.status(503).json({ error: "Database unavailable." });
+
+      const { data: contractor, error: cErr } = await hsSupa
+        .from("contractor_applications")
+        .select("id, full_name, email, signwell_reclean_clause_version")
+        .eq("email", req.user!.email)
+        .maybeSingle();
+
+      if (cErr || !contractor) {
+        return res.status(404).json({ error: "Contractor record not found." });
+      }
+
+      const { sendContractorAgreement } = await import("./signwell");
+      const { documentId, signingUrl } = await sendContractorAgreement({
+        contractorId:    contractor.id,
+        contractorName:  contractor.full_name,
+        contractorEmail: contractor.email,
+        isResend:        true,
+      });
+
+      // Record the new document id so status can fetch the download URL later
+      await hsSupa
+        .from("contractor_applications")
+        .update({ signwell_resend_document_id: documentId, updated_at: new Date().toISOString() })
+        .eq("id", contractor.id);
+
+      console.log(`[agreement] Self-serve resend to ${contractor.email}, document=${documentId}`);
+
+      return res.json({
+        success:    true,
+        documentId,
+        signingUrl,
+        message:    "Re-signature request sent. Check your email for the signing link.",
+      });
+    } catch (err: any) {
+      console.error("[agreement] Resend error:", err?.message);
+      return res.status(500).json({ error: err.message || "Failed to send re-signature request." });
+    }
+  });
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
