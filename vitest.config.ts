@@ -10,7 +10,8 @@ export default defineConfig({
   },
   test: {
     root: ".",
-    include: ["server/**/*.test.ts"],
+    include: ["server/**/__tests__/**/*.test.ts", "server/**/*.test.ts"],
     environment: "node",
+    globals: false,
   },
 });

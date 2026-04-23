@@ -8,6 +8,11 @@ import { quoteFormSchema, emailSignupRequestSchema } from "@shared/schema";
 import { getAvailableSlots, bookSlot, type SlotInfo } from "./calendar";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
+import {
+  fireNewContractorNotification,
+  fireNewClientBookingNotification,
+  fireRepeatClientBookingNotification,
+} from "./emails/adminNotifications";
 import { requireAuth, requireAuthOrInternal, ipRateLimit } from "./middleware/requireAuth";
 import { validateBookingSlots, generateBookingReference, type SlotInput } from "./booking";
 import { buildPayoutRecord } from "./payouts";
@@ -549,6 +554,65 @@ function buildEmailHtml(client: any, quote: any, items: any[], baseUrl: string) 
 
 // ── Route Registration ────────────────────────────────────────────────────────
 export async function registerRoutes(_httpServer: Server, app: Express) {
+
+  // ── Internal: Supabase Auth user-created webhook ──────────────────────────
+  // Called by Supabase Auth when a new user is created. Fires the admin
+  // "new contractor signup" email. Guarded by INTERNAL_SERVICE_SECRET so only
+  // Supabase (or another trusted caller) can hit it. Fire-and-forget: always
+  // returns 200 once the secret is validated, so Supabase's retry logic
+  // doesn't duplicate sends if email delivery is slow.
+  app.post("/api/internal/hooks/auth-user-created", async (req, res) => {
+    const expected = process.env.INTERNAL_SERVICE_SECRET;
+    const provided = req.header("x-internal-secret");
+    if (!expected || !provided || provided !== expected) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+
+    try {
+      // Supabase Auth Hook payload shape (v1): { type, table, record, ... }
+      // Direct DB webhook shape: { record: { id, email, raw_user_meta_data, ... } }
+      // Auth "Send Email" / custom-access-token hook: { user: { ... } }
+      const body = req.body ?? {};
+      const record = body.record ?? body.user ?? body;
+      const authUserId: string | undefined = record?.id ?? record?.user_id;
+      const email: string | undefined = record?.email;
+
+      if (!authUserId || !email) {
+        return res.status(400).json({ error: "missing id or email in payload" });
+      }
+
+      // Optional idempotency guard: a single row in sent_admin_notifications
+      // with unique (event_type, event_key) prevents duplicate emails if the
+      // webhook is retried. Table may not exist yet — we degrade gracefully.
+      let shouldSend = true;
+      if (hsSupa) {
+        try {
+          const { error: insertErr } = await hsSupa
+            .from("sent_admin_notifications")
+            .insert({ event_type: "contractor_signup", event_key: authUserId });
+          if (insertErr) {
+            // 23505 = unique_violation → already sent
+            if ((insertErr as any).code === "23505") shouldSend = false;
+            // Any other error (table missing, RLS, etc.) — log and proceed.
+            else if ((insertErr as any).code !== "42P01") {
+              console.warn("[adminNotify] sent_admin_notifications insert warning:", insertErr);
+            }
+          }
+        } catch (e) {
+          console.warn("[adminNotify] sent_admin_notifications unavailable:", e);
+        }
+      }
+
+      if (shouldSend) {
+        fireNewContractorNotification({ email, authUserId });
+      }
+      return res.json({ ok: true, deduplicated: !shouldSend });
+    } catch (err: any) {
+      console.error("[auth-user-created] handler failed:", err);
+      // Never surface 5xx to the hook — Supabase will retry and we'd duplicate.
+      return res.json({ ok: false, error: err?.message || "unknown" });
+    }
+  });
 
   // ── Logo asset ────────────────────────────────────────────────────────────
   app.get("/api/assets/logo", (_req, res) => {
@@ -1318,6 +1382,73 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 </body>
 </html>`,
         }).catch(e => console.error("[booking] Client confirm email failed:", e));
+      }
+
+      if (process.env.ADMIN_BOOKING_NOTIFICATIONS_ENABLED === "true") {
+        try {
+          const customerEmail = (client.email || "").toLowerCase();
+          let priorCount = 0;
+          let usedJobsTable = false;
+
+          if (hsSupa && customerEmail) {
+            // TODO(PR#5): once jobs rows are inserted with customer_email,
+            // switch to counting those directly. For now attempt it and fall
+            // back to quotes if the column/table isn't populated yet.
+            try {
+              const { count, error } = await hsSupa
+                .from("jobs")
+                .select("id", { count: "exact", head: true })
+                .ilike("customer_email", customerEmail);
+              if (!error && typeof count === "number") {
+                // `count` includes the row PR#5 just inserted for this booking.
+                priorCount = Math.max(0, count - 1);
+                usedJobsTable = true;
+              }
+            } catch {}
+          }
+
+          if (!usedJobsTable && customerEmail) {
+            // Fallback: mirrors the isReturning logic in /api/job/complete —
+            // count accepted quotes across every client row sharing this email.
+            // The current quote is already marked 'accepted' above, so subtract 1.
+            try {
+              const allClients = await db.getClients();
+              const clientIds = allClients
+                .filter((c: any) => c.email?.toLowerCase() === customerEmail)
+                .map((c: any) => c.id);
+              const ids = clientIds.length ? clientIds : [q.clientId];
+              const allQuotes = await db.getQuotes();
+              const accepted = allQuotes.filter(
+                (qq: any) => ids.includes(qq.clientId) && qq.status === "accepted",
+              );
+              priorCount = Math.max(0, accepted.length - 1);
+            } catch (e) {
+              console.warn("[adminNotify] prior-booking count fallback failed:", e);
+              priorCount = 0;
+            }
+          }
+
+          const totalBookings = priorCount + 1;
+          const referenceCode = q.id.slice(0, 8);
+          const payload = {
+            email: client.email,
+            name: client.name,
+            referenceCode,
+            serviceType: q.propertyType || "Cleaning",
+            total: q.total,
+            address: client.address || "",
+            appointmentStart: primarySlot.start,
+            slotCount: validSlots.length,
+          };
+
+          if (priorCount === 0) {
+            fireNewClientBookingNotification(payload);
+          } else {
+            fireRepeatClientBookingNotification({ ...payload, totalBookings });
+          }
+        } catch (e) {
+          console.error("[adminNotify] booking dispatch failed (non-fatal):", e);
+        }
       }
 
       res.json({
