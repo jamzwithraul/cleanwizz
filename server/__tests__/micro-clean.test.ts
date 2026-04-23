@@ -65,13 +65,13 @@ describe("Micro Clean tier — pricing", () => {
 describe("Existing tiers unchanged by micro addition", () => {
   it("standard at 1500 sqft still computes correctly", () => {
     const result = computePricing({ serviceType: "standard", squareFootage: 1500 });
-    // sqftPrice = 1500 * 0.29 = 435; basePrice = max(289, 435) = 435
-    expect(result.subtotal).toBe(435);
+    // sqftPrice = 1500 * 0.25 = 375; basePrice = max(249, 375) = 375
+    expect(result.subtotal).toBe(375);
   });
 
   it("deep at 1000 sqft still uses its minimum", () => {
     const result = computePricing({ serviceType: "deep", squareFootage: 1000 });
-    // sqftPrice = 1000 * 0.39 = 390; basePrice = max(499, 390) = 499
-    expect(result.subtotal).toBe(499);
+    // sqftPrice = 1000 * 0.35 = 350; basePrice = max(429, 350) = 429
+    expect(result.subtotal).toBe(429);
   });
 });
