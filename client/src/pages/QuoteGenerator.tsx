@@ -53,9 +53,9 @@ import {
 
 // ── CASL consent copy (keep in sync with server default) ─────────────────────
 export const INLINE_CONSENT_TEXT =
-  "Email me promotional offers from Harry Spotter Cleaning Co. Unsubscribe anytime.";
+  "Email me promotional offers from Harriet's Spotless Cleaning Co. Unsubscribe anytime.";
 export const POPUP_CONSENT_TEXT =
-  "By submitting, you agree to receive promotional emails from Harry Spotter Cleaning Co. Unsubscribe anytime.";
+  "By submitting, you agree to receive promotional emails from Harriet's Spotless Cleaning Co. Unsubscribe anytime.";
 
 const SERVICE_OPTIONS = [
   {

@@ -13,8 +13,12 @@ import {
   fireNewClientBookingNotification,
   fireRepeatClientBookingNotification,
 } from "./emails/adminNotifications";
+import { requireAuth, requireAuthOrInternal, ipRateLimit } from "./middleware/requireAuth";
+import { validateBookingSlots, generateBookingReference, type SlotInput } from "./booking";
+import { buildPayoutRecord } from "./payouts";
+import { recordLateSkip, LATE_SKIP_THRESHOLD_MS } from "./subscriptions";
 
-// ── Harry Spotter Supabase (contractor data) ──────────────────────────────────
+// ── Harriet's Spotless Supabase (contractor data) ──────────────────────────────────
 const HS_SUPABASE_URL  = process.env.HS_SUPABASE_URL  || "https://gjfeqnfmwbsfwnbepwvu.supabase.co";
 const HS_SERVICE_KEY   = process.env.HS_SUPABASE_SERVICE_ROLE_KEY || "";
 const hsSupa = HS_SERVICE_KEY ? createClient(HS_SUPABASE_URL, HS_SERVICE_KEY) : null;
@@ -38,8 +42,8 @@ async function triggerCascadeAssignment(opts: {
   // Under 6 hours — notify owner for manual assignment
   if (hoursAway < 6) {
     await resend.emails.send({
-      from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
-      to:      "magic@harryspottercleaning.ca",
+      from:    process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
+      to:      "magic@harrietscleaning.ca",
       subject: `⚠️ Urgent — Manual Assignment Needed (job in ${Math.round(hoursAway * 60)} min)`,
       html: `<p>A client just booked a job starting in <strong>${Math.round(hoursAway * 60)} minutes</strong>. Please assign a contractor manually.</p>
              <p>Quote: ${opts.quoteId} | Client: ${opts.clientName} | ${opts.clientAddr}</p>
@@ -51,20 +55,23 @@ async function triggerCascadeAssignment(opts: {
   const windowMins = hoursAway >= 24 ? 120 : 30;
 
   // Get approved contractors in round-robin order
+  // Sprint I gate: only contractors with signwell_reclean_clause_version >= 1
+  // can receive new job assignments.
   const { data: state } = await hsSupa.from("cascade_state").select("last_contractor_index").eq("id", "singleton").single();
   const lastIdx = state?.last_contractor_index ?? 0;
 
   const { data: contractors } = await hsSupa
     .from("contractor_applications")
-    .select("id, full_name, email")
+    .select("id, full_name, email, signwell_reclean_clause_version")
     .eq("status", "approved")
+    .gte("signwell_reclean_clause_version", 1)
     .order("cascade_order", { ascending: true });
 
   if (!contractors || contractors.length === 0) {
     // No contractors — notify owner
     await resend.emails.send({
-      from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
-      to:      "magic@harryspottercleaning.ca",
+      from:    process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
+      to:      "magic@harrietscleaning.ca",
       subject: `⚠️ No contractors available — ${opts.clientName}`,
       html: `<p>No approved contractors found. Please assign manually.</p><p>Quote: ${opts.quoteId}</p>`,
     }).catch(console.error);
@@ -88,8 +95,8 @@ async function triggerCascadeAssignment(opts: {
     cascade_position: 1,
   });
 
-  // Build accept / decline URLs (Harry Spotter portal)
-  const acceptUrl  = `https://harryspottercleaning.ca/contractor?action=accept&jobId=${opts.quoteId}&cid=${contractor.id}`;
+  // Build accept / decline URLs (Harriet's Spotless portal)
+  const acceptUrl  = `https://harrietscleaning.ca/contractor?action=accept&jobId=${opts.quoteId}&cid=${contractor.id}`;
   const declineUrl = `${opts.baseUrl}/api/cascade/decline?quoteId=${opts.quoteId}&cid=${contractor.id}`;
 
   const slotLabel = new Date(opts.start).toLocaleString("en-CA", {
@@ -98,7 +105,7 @@ async function triggerCascadeAssignment(opts: {
   });
 
   await resend.emails.send({
-    from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+    from:    process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
     to:      contractor.email,
     subject: `✨ New Mission — ${slotLabel}`,
     html: buildContractorMissionEmail({
@@ -129,8 +136,8 @@ function buildContractorMissionEmail(o: {
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body style="margin:0;padding:0;background:#f7f6f2;font-family:'Segoe UI',sans-serif;">
 <div style="max-width:560px;margin:32px auto;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.12);">
   <div style="background:${headerGrad};padding:28px 36px;text-align:center;">
-    <img src="${o.logoUrl}" alt="Harry Spotter" style="width:72px;height:72px;border-radius:50%;background:#fff;padding:6px;object-fit:contain;margin-bottom:12px;display:block;margin-left:auto;margin-right:auto;">
-    <h1 style="color:#f9bc15;margin:0;font-size:22px;font-weight:800;">Harry Spotter Cleaning Co.</h1>
+    <img src="${o.logoUrl}" alt="Harriet's Spotless" style="width:72px;height:72px;border-radius:50%;background:#fff;padding:6px;object-fit:contain;margin-bottom:12px;display:block;margin-left:auto;margin-right:auto;">
+    <h1 style="color:#f9bc15;margin:0;font-size:22px;font-weight:800;">Harriet's Spotless Cleaning Co.</h1>
     <p style="color:rgba(249,188,21,.75);margin:4px 0 0;font-size:12px;">New Mission Available</p>
   </div>
   <div style="background:#fff;padding:28px 36px;">
@@ -150,7 +157,7 @@ function buildContractorMissionEmail(o: {
     <p style="font-size:11px;color:#bab9b4;text-align:center;margin:0;">This offer expires in ${windowLabel}. If you do not respond, the job will be offered to the next specialist.</p>
   </div>
   <div style="background:#1a0a0e;padding:14px 36px;text-align:center;border-top:2px solid #f9bc15;">
-    <p style="color:rgba(249,188,21,.5);font-size:11px;margin:0;">Harry Spotter Cleaning Co. · harryspottercleaning.ca</p>
+    <p style="color:rgba(249,188,21,.5);font-size:11px;margin:0;">Harriet's Spotless Cleaning Co. · harrietscleaning.ca</p>
   </div>
 </div>
 </body></html>`;
@@ -250,12 +257,13 @@ const OVEN_PRICE = 100;            // in-oven cleaning add-on
 const LAUNDRY_PRICE = 100;         // laundry wash & fold add-on
 const HST_RATE = 0.13;             // Ontario HST
 
-type ServiceType = "standard" | "deep" | "moveout";
+type ServiceType = "standard" | "deep" | "moveout" | "micro";
 
 const SERVICE_PRICING: Record<ServiceType, { minimum: number; sqftRate: number; label: string }> = {
-  standard: { minimum: 289, sqftRate: 0.29, label: "Standard Clean" },
-  deep:     { minimum: 499, sqftRate: 0.39, label: "Deep Clean" },
-  moveout:  { minimum: 699, sqftRate: 0.49, label: "Move-In/Move-Out Clean" },
+  standard: { minimum: 249, sqftRate: 0.25, label: "Standard Clean" },
+  deep:     { minimum: 429, sqftRate: 0.35, label: "Deep Clean" },
+  moveout:  { minimum: 599, sqftRate: 0.45, label: "Move-In/Move-Out Clean" },
+  micro:    { minimum: 199, sqftRate: 0,    label: "Micro Clean" },
 };
 
 // Flat contractor payouts (per job, regardless of quote total)
@@ -263,6 +271,7 @@ const CONTRACTOR_PAYOUT: Record<ServiceType, number> = {
   standard: 160,
   deep:     240,
   moveout:  320,
+  micro:    120,
 };
 
 // Non-stacking discount rates. Take the larger of the eligible discounts.
@@ -306,12 +315,43 @@ export interface PricingBreakdown {
 }
 
 function resolveService(serviceType: string): ServiceType {
-  if (serviceType === "deep" || serviceType === "moveout" || serviceType === "standard") return serviceType;
+  if (serviceType === "deep" || serviceType === "moveout" || serviceType === "standard" || serviceType === "micro") return serviceType;
   return "standard";
 }
 
 export function computePricing(input: ComputePricingInput): PricingBreakdown {
   const service = resolveService(input.serviceType);
+
+  // Micro Clean: flat $199, no sqft upgrade, max 800 sqft
+  if (service === "micro") {
+    const sqft = Math.max(0, Math.floor(input.squareFootage || 0));
+    if (sqft > 800) {
+      throw Object.assign(new Error("Micro Clean is only available for homes up to 800 sq ft."), { statusCode: 400 });
+    }
+    const flatPrice = 199;
+    const hst = round2(flatPrice * HST_RATE);
+    const total = round2(flatPrice + hst);
+    return {
+      serviceType: service,
+      minimum: flatPrice,
+      sqftRate: 0,
+      sqftPrice: 0,
+      basePrice: flatPrice,
+      discountablePortion: 0,
+      discountPct: 0,
+      discountLabel: null,
+      discount: 0,
+      discountedBase: flatPrice,
+      addOnsTotal: 0,
+      subtotal: flatPrice,
+      hst,
+      total,
+      lineItems: [
+        { label: "Micro Clean \u2014 flat rate (homes up to 800 sq ft)", quantity: 1, unitPrice: flatPrice, lineTotal: flatPrice, category: "base" },
+      ],
+    };
+  }
+
   const sqft = Math.max(0, Math.floor(input.squareFootage || 0));
   const { minimum, sqftRate, label } = SERVICE_PRICING[service];
   const s = input.settings || {};
@@ -416,14 +456,14 @@ function buildEmailHtml(client: any, quote: any, items: any[], baseUrl: string) 
   const logoUrl = `${baseUrl}/api/assets/logo`;
   return `<!DOCTYPE html>
 <html>
-<head><meta charset="UTF-8"><title>Your Cleaning Quote — Harry Spotter Cleaning Co.</title></head>
+<head><meta charset="UTF-8"><title>Your Cleaning Quote — Harriet's Spotless Cleaning Co.</title></head>
 <body style="margin:0;padding:0;background:#fdf8f0;font-family:'Segoe UI',Arial,sans-serif;">
   <div style="max-width:600px;margin:40px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 32px rgba(110,22,41,0.12);">
 
     <!-- Header -->
     <div style="background:linear-gradient(135deg,#6b1629 0%,#a01733 60%,#78420e 100%);padding:32px 40px;text-align:center;">
-      <img src="${logoUrl}" alt="Harry Spotter Cleaning Co." style="width:90px;height:90px;object-fit:contain;border-radius:50%;background:#fff;padding:6px;margin-bottom:14px;display:block;margin-left:auto;margin-right:auto;" />
-      <h1 style="color:#f9bc15;margin:0;font-size:26px;font-weight:800;letter-spacing:0.5px;">Harry Spotter Cleaning Co.</h1>
+      <img src="${logoUrl}" alt="Harriet's Spotless Cleaning Co." style="width:90px;height:90px;object-fit:contain;border-radius:50%;background:#fff;padding:6px;margin-bottom:14px;display:block;margin-left:auto;margin-right:auto;" />
+      <h1 style="color:#f9bc15;margin:0;font-size:26px;font-weight:800;letter-spacing:0.5px;">Harriet's Spotless Cleaning Co.</h1>
       <p style="color:#fde68a;margin:6px 0 0;font-size:14px;letter-spacing:0.5px;">Ottawa’s Magical Cleaning Team</p>
     </div>
 
@@ -502,8 +542,8 @@ function buildEmailHtml(client: any, quote: any, items: any[], baseUrl: string) 
 
     <!-- Footer -->
     <div style="padding:20px 40px;background:linear-gradient(135deg,#4a0f1c,#3d0c16);border-top:3px solid #f9bc15;text-align:center;">
-      <p style="color:#fde68a;font-size:13px;font-weight:600;margin:0 0 4px;">Harry Spotter Cleaning Co.</p>
-      <p style="color:#c4a87a;font-size:12px;margin:0 0 4px;">Ottawa, Ontario &middot; harryspottercleaning.ca</p>
+      <p style="color:#fde68a;font-size:13px;font-weight:600;margin:0 0 4px;">Harriet's Spotless Cleaning Co.</p>
+      <p style="color:#c4a87a;font-size:12px;margin:0 0 4px;">Ottawa, Ontario &middot; harrietscleaning.ca</p>
       <p style="color:#8a6a50;font-size:11px;margin:0;">Quote ID: ${quote.id.slice(0, 8)}</p>
     </div>
 
@@ -576,7 +616,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
   // ── Logo asset ────────────────────────────────────────────────────────────
   app.get("/api/assets/logo", (_req, res) => {
-    const logoPath = path.resolve(__dirname, "public", "harry-spotter-logo.jpg");
+    const logoPath = path.resolve(__dirname, "public", "harriets-spotless-logo.jpg");
     if (fs.existsSync(logoPath)) {
       res.setHeader("Content-Type", "image/jpeg");
       res.setHeader("Cache-Control", "public, max-age=86400");
@@ -596,7 +636,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
   });
 
-  app.put("/api/settings", async (req, res) => {
+  app.put("/api/settings", requireAuth, async (req, res) => {
     try {
       const s = await getStorage().upsertSettings(req.body);
       res.json(s);
@@ -629,7 +669,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
   });
 
-  app.post("/api/promo-codes", async (req, res) => {
+  app.post("/api/promo-codes", requireAuth, async (req, res) => {
     try {
       const { code, type, value, active, validFrom, validTo } = req.body;
       const pc = await getStorage().createPromoCode({
@@ -668,7 +708,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   // ── Email Signups (CASL consent audit) ─────────────────────────────────────
   // Append-only log — records every time a user ticks a consent checkbox or
   // submits the promo popup. Captures IP + UA from the request.
-  app.post("/api/email-signups", async (req, res) => {
+  // Public by design (anonymous signup). Rate-limit by IP (50/min).
+  // TODO: swap the in-memory counter for Redis before we scale out horizontally.
+  app.post("/api/email-signups", ipRateLimit({ max: 50, windowMs: 60_000 }), async (req, res) => {
     try {
       const parsed = emailSignupRequestSchema.parse(req.body);
       const ip =
@@ -776,55 +818,40 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         }
       }
 
-      // ── Email consent gate (CASL) ───────────────────────────────────────────
-      // Every discount (Welcome, Multi-Booking, any future promo) requires
-      // recorded CASL consent. Re-validate server-side; never trust the
-      // frontend alone. If consent is missing, strip discount eligibility.
-      let consentVerified = false;
-      if (form.emailConsentId) {
-        const signup = await db.getEmailSignup(form.emailConsentId);
-        if (signup && signup.email.toLowerCase() === form.email.toLowerCase()) {
-          consentVerified = true;
-        }
-      }
-      if (!consentVerified && form.emailConsent === true) {
-        // Client declared consent without a prior signup row — record it now.
-        const source = form.emailConsentSource ?? "inline_checkbox";
-        const consentText = form.emailConsentText ??
-          "Email me promotional offers from Harry Spotter Cleaning Co. Unsubscribe anytime.";
-        const ip =
-          (req.headers["x-forwarded-for"] as string || "").split(",")[0].trim() ||
-          req.ip ||
-          req.socket?.remoteAddress ||
-          null;
-        const ua = (req.headers["user-agent"] as string) || null;
-        try {
+      // ── CASL consent — implied from booking (s.10(9), 24-month window) ───────
+      // Booking a paid service creates an Existing Business Relationship under
+      // CASL §10(9). That gives us implied consent to send commercial email
+      // for 24 months from the transaction. We record an audit row regardless
+      // so we have a timestamp + IP/UA trail if anyone ever asks for proof.
+      //
+      // Discounts are NO LONGER gated on consent. The booking action itself
+      // is the consent event — separating them just added checkout friction.
+      const ip =
+        (req.headers["x-forwarded-for"] as string || "").split(",")[0].trim() ||
+        req.ip ||
+        req.socket?.remoteAddress ||
+        null;
+      const ua = (req.headers["user-agent"] as string) || null;
+      try {
+        const hasPrior = await db.hasEmailSignup(form.email).catch(() => false);
+        if (!hasPrior) {
           await db.createEmailSignup({
             email: form.email,
-            source,
-            consentText,
+            source: "booking_implied",
+            consentText:
+              "Implied consent from paid booking transaction — CASL §10(9) Existing Business Relationship (24-month window).",
             ipAddress: ip,
             userAgent: ua,
           });
-          consentVerified = true;
-        } catch (e: any) {
-          console.error("[consent] Failed to record inline consent:", e?.message);
         }
-      }
-      if (!consentVerified) {
-        const hasPrior = await db.hasEmailSignup(form.email).catch(() => false);
-        if (hasPrior) consentVerified = true;
+      } catch (e: any) {
+        // Non-fatal: failing to write the audit row should never block a paid booking.
+        console.error("[consent] Failed to record implied-consent audit row:", e?.message);
       }
 
-      // Discount eligibility is gated on verified consent. If there is no
-      // consent on file, strip eligibility so the quote is generated at
-      // full price.
-      const multiEligible   = consentVerified && multiEligibleRaw;
-      const welcomeEligible = consentVerified && welcomeEligibleRaw;
-      if (!consentVerified) {
-        // Drop the promo code so it is not recorded as "applied" on a full-price quote.
-        usedPromo = null;
-      }
+      // Discount eligibility — promo code + multi-session — applied unconditionally.
+      const multiEligible   = multiEligibleRaw;
+      const welcomeEligible = welcomeEligibleRaw;
 
       const pricing = computePricing({
         serviceType: form.serviceType,
@@ -948,8 +975,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           const items  = await db.getQuoteItems(q.id);
           const linesSummary = items.map(i => `${i.label}: $${i.lineTotal.toFixed(2)}`).join("<br>");
           await resend.emails.send({
-            from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
-            to:      "magic@harryspottercleaning.ca",
+            from:    process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
+            to:      "magic@harrietscleaning.ca",
             subject: `✅ Quote Accepted — ${client?.name} ($${q.total.toFixed(2)} CAD)`,
             html: `
               <div style="font-family:'Segoe UI',sans-serif;max-width:600px;margin:0 auto;padding:32px;">
@@ -999,9 +1026,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       }
 
       await resend.emails.send({
-        from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+        from:    process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
         to:      client.email,
-        subject: `Your Cleaning Quote from Harry Spotter Cleaning Co. — $${q.total.toFixed(2)} CAD`,
+        subject: `Your Cleaning Quote from Harriet's Spotless Cleaning Co. — $${q.total.toFixed(2)} CAD`,
         html,
       });
 
@@ -1044,15 +1071,26 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   });
 
   // POST /api/payment/intent — create a Stripe PaymentIntent for a quote
+  // Public by design — anonymous clients submit quotes before creating an account.
+  // Instead of JWT auth, we check the supplied `customerEmail` matches the quote's
+  // client email: a quote-ownership guard that stops a leaked quoteId from being
+  // weaponised against a different client's email.
   app.post("/api/payment/intent", async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Payments not configured." });
-      const { quoteId } = req.body;
+      const { quoteId, customerEmail } = req.body;
       if (!quoteId) return res.status(400).json({ error: "quoteId required." });
 
       const db = getStorage();
       const q  = await db.getQuote(quoteId);
       if (!q) return res.status(404).json({ error: "Quote not found." });
+
+      if (customerEmail) {
+        const client = await db.getClient(q.clientId);
+        if (!client || client.email.toLowerCase() !== String(customerEmail).toLowerCase()) {
+          return res.status(403).json({ error: "Quote does not belong to this email." });
+        }
+      }
 
       const total = q.total;
       const amountCents = Math.round(total * 100);
@@ -1061,7 +1099,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         currency: "cad",
         capture_method: "automatic",  // capture payment immediately at booking
         metadata: { quoteId: q.id },
-        description: `Harry Spotter — Quote ${q.id.slice(0, 8)}`,
+        description: `Harriet's Spotless — Quote ${q.id.slice(0, 8)}`,
       });
 
       res.json({ clientSecret: intent.client_secret, amount: total });
@@ -1072,11 +1110,16 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   });
 
   // POST /api/booking/book — client books a slot for a quote
-  app.post("/api/booking/book", async (req, res) => {
+  app.post("/api/booking/book", requireAuth, async (req, res) => {
     try {
       const { quoteId, start, end, paymentIntentId } = req.body;
-      if (!quoteId || !start || !end) {
-        return res.status(400).json({ error: "quoteId, start, and end are required." });
+      const bodySlots = Array.isArray(req.body?.slots) ? (req.body.slots as SlotInput[]) : null;
+      const slotInputs: SlotInput[] = bodySlots && bodySlots.length > 0
+        ? bodySlots
+        : (start && end ? [{ start, end }] : []);
+
+      if (!quoteId || slotInputs.length === 0) {
+        return res.status(400).json({ error: "quoteId and at least one slot (slots[] or start/end) are required." });
       }
 
       const db     = getStorage();
@@ -1085,18 +1128,100 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       const client = await db.getClient(q.clientId);
       if (!client) return res.status(404).json({ error: "Client not found." });
 
-      // Create Google Calendar event
-      const eventLink = await bookSlot({
-        start,
-        end,
-        clientName:    client.name,
-        clientEmail:   client.email,
-        clientPhone:   client.phone || "",
-        clientAddress: client.address || "",
-        serviceType: q.propertyType,
-        total:         q.total,
-        quoteId:       q.id,
-      });
+      // ── Fix 4: re-validate 48h buffer + slot availability against the live
+      // Google Calendar feed. Client-side checks are not trusted.
+      const validation = await validateBookingSlots(slotInputs);
+      if (!validation.ok) {
+        const err = validation.err;
+        if (err.kind === "buffer_violation") {
+          return res.status(400).json({ error: "buffer_violation", detail: err.reason, slot: err.slot });
+        }
+        if (err.kind === "slot_unavailable") {
+          return res.status(409).json({ error: "slot_unavailable", detail: err.reason, slot: err.slot });
+        }
+        return res.status(400).json({ error: err.kind, detail: err.reason });
+      }
+      const validSlots = validation.slots;
+
+      // Create one Google Calendar event per slot.
+      const calendarResults: Array<{ start: string; end: string; eventLink: string }> = [];
+      for (const s of validSlots) {
+        const link = await bookSlot({
+          start:         s.start,
+          end:           s.end,
+          clientName:    client.name,
+          clientEmail:   client.email,
+          clientPhone:   client.phone || "",
+          clientAddress: client.address || "",
+          serviceType:   q.propertyType,
+          total:         q.total,
+          quoteId:       q.id,
+        });
+        calendarResults.push({ start: s.start, end: s.end, eventLink: link });
+      }
+
+      // ── Fix 5: write a row per slot to the Supabase jobs table + generate
+      // a booking reference code. Without this, the contractor pipeline never
+      // starts and the calendar UI keeps offering the same slot.
+      const bookingRef = generateBookingReference();
+      const jobIds: string[] = [];
+      if (hsSupa) {
+        let serviceTypeForJob: string = "standard";
+        try {
+          const sArr = JSON.parse(q.services || "[]");
+          if (Array.isArray(sArr) && typeof sArr[0] === "string") serviceTypeForJob = sArr[0];
+        } catch {}
+        const flatPayout = getContractorPayout(serviceTypeForJob);
+        for (let i = 0; i < validSlots.length; i++) {
+          const s = validSlots[i];
+          const eventLink = calendarResults[i]?.eventLink || "";
+          const notes = [
+            `Booking ref: ${bookingRef}${validSlots.length > 1 ? ` (session ${i + 1}/${validSlots.length})` : ""}`,
+            `Quote: ${q.id}`,
+            client.email ? `Client email: ${client.email}` : "",
+            client.phone ? `Phone: ${client.phone}` : "",
+            q.squareFootage ? `Sqft: ${q.squareFootage}` : "",
+            eventLink ? `Calendar: ${eventLink}` : "",
+          ].filter(Boolean).join("\n");
+          const { data: jobRow, error: jobErr } = await hsSupa.from("jobs").insert({
+            client_name:     client.name,
+            client_address:  client.address || "",
+            city:            (client as any).city || "",
+            service_type:    serviceTypeForJob,
+            scheduled_start: s.start,
+            scheduled_end:   s.end,
+            pay_amount:      flatPayout,
+            notes,
+            status:          "open",
+            quote_id:        q.id,
+          }).select("id").single();
+          if (jobErr) {
+            console.error("[booking] Failed to insert job row:", jobErr.message);
+          } else if (jobRow?.id) {
+            jobIds.push(jobRow.id);
+          }
+        }
+
+        // Kick off the notify-contractors chain for the first job (fan-out
+        // handled server-side; idempotent by (job_id, contractor_id) unique).
+        if (jobIds.length > 0 && process.env.SUPABASE_FUNCTIONS_URL && process.env.INTERNAL_SERVICE_SECRET) {
+          try {
+            await fetch(`${process.env.SUPABASE_FUNCTIONS_URL}/notify-contractors`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-Internal-Secret": process.env.INTERNAL_SERVICE_SECRET,
+              },
+              body: JSON.stringify({ jobId: jobIds[0] }),
+            });
+          } catch (e) {
+            console.error("[booking] notify-contractors kickoff failed:", e);
+          }
+        }
+      }
+
+      const primarySlot = validSlots[0];
+      const eventLink = calendarResults[0]?.eventLink || "";
 
             // Update to accepted, store Stripe PaymentIntent ID, and fire cascade
       await db.updateQuoteStatus(q.id, "accepted", { paymentIntentId: paymentIntentId || null });
@@ -1107,15 +1232,15 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       // Notify owner
       if (resend) {
         const items = await db.getQuoteItems(q.id);
-        const slotLabel = new Date(start).toLocaleString("en-CA", {
+        const slotLabel = new Date(primarySlot.start).toLocaleString("en-CA", {
           timeZone: "America/Toronto",
           weekday: "long", month: "long", day: "numeric",
           hour: "numeric", minute: "2-digit", hour12: true,
         });
         const linesSummary = items.map(i => `${i.label}: $${i.lineTotal.toFixed(2)}`).join("<br>");
         await resend.emails.send({
-          from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
-          to:      "magic@harryspottercleaning.ca",
+          from:    process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
+          to:      "magic@harrietscleaning.ca",
           subject: `✅ Booking Confirmed — ${client.name} on ${slotLabel}`,
           html: `
             <div style="font-family:'Segoe UI',sans-serif;max-width:600px;margin:0 auto;padding:32px;">
@@ -1154,7 +1279,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         } catch {}
 
         await resend.emails.send({
-          from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+          from:    process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
           to:      client.email,
           subject: `📅 Your Cleaning is Booked — ${slotLabel}`,
           html: `<!DOCTYPE html>
@@ -1164,7 +1289,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
     <!-- Header -->
     <div style="background:linear-gradient(135deg,#6b1629 0%,#a01733 60%,#78420e 100%);padding:32px 40px;text-align:center;">
-      <h1 style="color:#f9bc15;margin:0;font-size:24px;font-weight:800;letter-spacing:0.5px;">Harry Spotter Cleaning Co.</h1>
+      <h1 style="color:#f9bc15;margin:0;font-size:24px;font-weight:800;letter-spacing:0.5px;">Harriet's Spotless Cleaning Co.</h1>
       <p style="color:#fde68a;margin:6px 0 0;font-size:13px;letter-spacing:0.5px;">Ottawa's Magical Cleaning Team</p>
     </div>
 
@@ -1248,9 +1373,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
     <!-- Footer -->
     <div style="padding:20px 40px;background:linear-gradient(135deg,#4a0f1c,#3d0c16);border-top:3px solid #f9bc15;text-align:center;">
-      <p style="color:#fde68a;font-size:13px;font-weight:600;margin:0 0 4px;">Harry Spotter Cleaning Co.</p>
-      <p style="color:#c4a87a;font-size:12px;margin:0 0 4px;">Ottawa, Ontario &middot; harryspottercleaning.ca</p>
-      <p style="color:#8a6a50;font-size:11px;margin:0;">Booking Reference: ${q.id.slice(0, 8)}</p>
+      <p style="color:#fde68a;font-size:13px;font-weight:600;margin:0 0 4px;">Harriet's Spotless Cleaning Co.</p>
+      <p style="color:#c4a87a;font-size:12px;margin:0 0 4px;">Ottawa, Ontario &middot; harrietscleaning.ca</p>
+      <p style="color:#8a6a50;font-size:11px;margin:0;">Booking Reference: ${bookingRef}</p>
     </div>
 
   </div>
@@ -1259,13 +1384,6 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         }).catch(e => console.error("[booking] Client confirm email failed:", e));
       }
 
-      // ── Admin notification: new-client vs repeat-client booking ──────────
-      // Gated by ADMIN_BOOKING_NOTIFICATIONS_ENABLED. Uses the jobs table as
-      // source of truth once PR #5 (fix/top5-blockers) lands — that PR writes
-      // one jobs row per slot inside this handler. Until then we count prior
-      // accepted quotes for the same client email as a fallback so this code
-      // is safe to ship on current main. Fire-and-forget: failures never
-      // block the booking response.
       if (process.env.ADMIN_BOOKING_NOTIFICATIONS_ENABLED === "true") {
         try {
           const customerEmail = (client.email || "").toLowerCase();
@@ -1319,8 +1437,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
             serviceType: q.propertyType || "Cleaning",
             total: q.total,
             address: client.address || "",
-            appointmentStart: start,
-            slotCount: 1,
+            appointmentStart: primarySlot.start,
+            slotCount: validSlots.length,
           };
 
           if (priorCount === 0) {
@@ -1333,7 +1451,20 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         }
       }
 
-      res.json({ success: true, eventLink });
+      res.json({
+        success: true,
+        bookingReference: bookingRef,
+        eventLink,
+        slots: validSlots.map((s, i) => ({
+          start:     s.start,
+          end:       s.end,
+          label:     s.label,
+          eventLink: calendarResults[i]?.eventLink || "",
+          jobId:     jobIds[i] || null,
+        })),
+        total: q.total,
+        serviceType: q.propertyType,
+      });
     } catch (err: any) {
       console.error("[booking] Failed to book slot:", err.message);
       res.status(500).json({ error: err.message });
@@ -1386,8 +1517,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         if (resend) {
           const client = q ? await db.getClient(q.clientId) : null;
           await resend.emails.send({
-            from: process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
-            to:   "magic@harryspottercleaning.ca",
+            from: process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
+            to:   "magic@harrietscleaning.ca",
             subject: `⚠️ All contractors declined — Quote #${quoteId}`,
             html: `<p>All contractors have declined or timed out for quote <strong>${quoteId}</strong>. The payment authorization has been automatically cancelled (full refund).${client ? ` Client: ${client.name} (${client.email})` : ''}</p>`,
           }).catch(console.error);
@@ -1395,18 +1526,18 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           // Notify client of the refund
           if (client) {
             await resend.emails.send({
-              from: process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+              from: process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
               to:   client.email,
-              subject: `Update on Your Cleaning Booking — Harry Spotter Cleaning Co.`,
+              subject: `Update on Your Cleaning Booking — Harriet's Spotless Cleaning Co.`,
               html: `<div style="font-family:'Segoe UI',sans-serif;max-width:560px;margin:32px auto;">
                 <div style="background:linear-gradient(135deg,#6b1629,#a01733);padding:24px 32px;border-radius:12px 12px 0 0;text-align:center;">
-                  <h1 style="color:#f9bc15;margin:0;font-size:20px;">Harry Spotter Cleaning Co.</h1>
+                  <h1 style="color:#f9bc15;margin:0;font-size:20px;">Harriet's Spotless Cleaning Co.</h1>
                 </div>
                 <div style="background:#fff;padding:28px 32px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
                   <p>Hi ${client.name},</p>
                   <p>Unfortunately, we were unable to assign a cleaning specialist for your requested time slot. Your payment authorization has been <strong>fully cancelled</strong> — no charge will appear on your card.</p>
                   <p>We sincerely apologize for the inconvenience. Please feel free to book again at a different time, or call us at <a href="tel:3433216242">343-321-6242</a> and we’ll help you find an available slot.</p>
-                  <p style="color:#7a7974;font-size:13px;margin-top:24px;">Harry Spotter Cleaning Co. · harryspottercleaning.ca</p>
+                  <p style="color:#7a7974;font-size:13px;margin-top:24px;">Harriet's Spotless Cleaning Co. · harrietscleaning.ca</p>
                 </div>
               </div>`,
             }).catch(console.error);
@@ -1435,7 +1566,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       // Pick next contractor (position is 1-indexed, array is 0-indexed)
       const nextContractor = contractors[(nextPosition - 1) % contractors.length];
 
-      const baseUrl    = process.env.BASE_URL || "https://api.harryspottercleaning.ca";
+      const baseUrl    = process.env.BASE_URL || "https://api.harrietscleaning.ca";
       const startStr   = jobRow?.scheduled_start ?? new Date(Date.now() + 86400000).toISOString();
       const hoursAway  = (new Date(startStr).getTime() - Date.now()) / 36e5;
       const windowMins = hoursAway >= 24 ? 120 : 30;
@@ -1453,12 +1584,12 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         timeZone: "America/Toronto", weekday: "long", month: "long",
         day: "numeric", hour: "numeric", minute: "2-digit", hour12: true,
       });
-      const acceptUrl  = `https://harryspottercleaning.ca/contractor?action=accept&jobId=${quoteId}&cid=${nextContractor.id}`;
+      const acceptUrl  = `https://harrietscleaning.ca/contractor?action=accept&jobId=${quoteId}&cid=${nextContractor.id}`;
       const declineUrl = `${baseUrl}/api/cascade/decline?quoteId=${quoteId}&cid=${nextContractor.id}`;
 
       if (resend) {
         await resend.emails.send({
-          from:    process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+          from:    process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
           to:      nextContractor.email,
           subject: `✨ New Mission — ${slotLabel}`,
           html: buildContractorMissionEmail({
@@ -1508,36 +1639,59 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   // Stripe Connect — Contractor payout onboarding
   // ══════════════════════════════════════════════════════════════════════════════
 
-  // POST /api/stripe/connect/create — Create a Stripe Connect account for a contractor
-  app.post("/api/stripe/connect/create", async (req, res) => {
+  // POST /api/stripe/connect/create — Create a Stripe Connect account for the
+  // authenticated contractor. Never trusts a client-supplied contractorId —
+  // the contractor row is resolved from req.user.email (Supabase JWT).
+  app.post("/api/stripe/connect/create", requireAuth, async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
-      const { contractorId, email, fullName } = req.body;
-      if (!contractorId || !email) return res.status(400).json({ error: "contractorId and email required" });
+      if (!hsSupa) return res.status(503).json({ error: "Supabase not configured" });
+      const callerEmail = req.user!.email.toLowerCase();
 
-      // Create a Stripe Connect Express account
+      const { data: contractor, error: cErr } = await hsSupa
+        .from("contractor_applications")
+        .select("id, full_name, email, stripe_account_id")
+        .ilike("email", callerEmail)
+        .maybeSingle();
+      if (cErr) return res.status(500).json({ error: cErr.message });
+      if (!contractor) return res.status(403).json({ error: "No contractor application for this user" });
+
+      // If a Stripe account already exists for this contractor, reuse it —
+      // never create a second one on retry.
+      if (contractor.stripe_account_id) {
+        return res.json({ accountId: contractor.stripe_account_id, reused: true });
+      }
+
+      const fullName = contractor.full_name || "";
       const account = await stripe.accounts.create({
         type: "express",
         country: "CA",
-        email,
+        email: contractor.email,
         business_type: "individual",
         individual: {
-          first_name: fullName?.split(" ")[0] || "",
-          last_name: fullName?.split(" ").slice(1).join(" ") || "",
-          email,
+          first_name: fullName.split(" ")[0] || "",
+          last_name:  fullName.split(" ").slice(1).join(" ") || "",
+          email:      contractor.email,
         },
         capabilities: {
           card_payments: { requested: false },
-          transfers: { requested: true },
+          transfers:     { requested: true },
         },
         business_profile: {
-          mcc: "7349", // cleaning services
-          product_description: "Residential cleaning services for Harry Spotter Cleaning Co.",
+          mcc: "7349",
+          product_description: "Residential cleaning services for Harriet's Spotless Cleaning Co.",
         },
-        metadata: { contractorId },
+        metadata: { contractorId: contractor.id },
       });
 
-      console.log(`[stripe-connect] Created account ${account.id} for contractor ${contractorId}`);
+      // Server is the only writer of stripe_account_id — the client no longer
+      // writes this column directly from PayoutSetup.tsx.
+      await hsSupa
+        .from("contractor_applications")
+        .update({ stripe_account_id: account.id })
+        .eq("id", contractor.id);
+
+      console.log(`[stripe-connect] Created account ${account.id} for contractor ${contractor.id}`);
       res.json({ accountId: account.id });
     } catch (err: any) {
       console.error("[stripe-connect] Create error:", err.message);
@@ -1545,18 +1699,30 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
   });
 
-  // POST /api/stripe/connect/onboard-link — Get a Stripe onboarding link
-  app.post("/api/stripe/connect/onboard-link", async (req, res) => {
+  // POST /api/stripe/connect/onboard-link — Get a Stripe onboarding link.
+  // Always resolves the accountId from the caller's contractor row — never
+  // from the request body.
+  app.post("/api/stripe/connect/onboard-link", requireAuth, async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
-      const { accountId, contractorId } = req.body;
-      if (!accountId) return res.status(400).json({ error: "accountId required" });
+      if (!hsSupa) return res.status(503).json({ error: "Supabase not configured" });
+      const callerEmail = req.user!.email.toLowerCase();
 
-      const returnUrl = `https://harryspottercleaning.ca/contractor?stripe=complete&cid=${contractorId || ""}`;
-      const refreshUrl = `https://harryspottercleaning.ca/contractor?stripe=refresh&cid=${contractorId || ""}`;
+      const { data: contractor, error: cErr } = await hsSupa
+        .from("contractor_applications")
+        .select("id, stripe_account_id")
+        .ilike("email", callerEmail)
+        .maybeSingle();
+      if (cErr) return res.status(500).json({ error: cErr.message });
+      if (!contractor || !contractor.stripe_account_id) {
+        return res.status(400).json({ error: "No Stripe account for this contractor" });
+      }
+
+      const returnUrl  = `https://harrietscleaning.ca/contractor?stripe=complete&cid=${contractor.id}`;
+      const refreshUrl = `https://harrietscleaning.ca/contractor?stripe=refresh&cid=${contractor.id}`;
 
       const link = await stripe.accountLinks.create({
-        account: accountId,
+        account: contractor.stripe_account_id,
         refresh_url: refreshUrl,
         return_url: returnUrl,
         type: "account_onboarding",
@@ -1591,13 +1757,13 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
   // ══════════════════════════════════════════════════════════════
   // Stripe Identity — Government ID + selfie verification
-  // Platform pays all verification costs. Harry Spotter never stores
+  // Platform pays all verification costs. Harriet's Spotless never stores
   // the ID image itself — only the verified name/DOB/status from Stripe.
   // ══════════════════════════════════════════════════════════════
 
   // POST /api/identity/create-session — Create a Stripe Identity VerificationSession
   // Returns the hosted verification URL the contractor is redirected to.
-  app.post("/api/identity/create-session", async (req, res) => {
+  app.post("/api/identity/create-session", requireAuth, async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
       if (!hsSupa) return res.status(503).json({ error: "Supabase not configured" });
@@ -1638,7 +1804,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         }
       }
 
-      const returnUrl = `https://harryspottercleaning.ca/contractor?identity=complete&cid=${contractorId}`;
+      const returnUrl = `https://harrietscleaning.ca/contractor?identity=complete&cid=${contractorId}`;
 
       const session = await stripe.identity.verificationSessions.create({
         type: "document",
@@ -1652,7 +1818,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         metadata: {
           contractor_id: contractorId,
           contractor_email: contractor.email,
-          platform: "harry_spotter_cleaning",
+          platform: "harriets_spotless_cleaning",
         },
         return_url: returnUrl,
       });
@@ -1710,7 +1876,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   // POST /api/identity/check-prc-name — Fuzzy-match contractor-provided PRC name vs Stripe-verified name
   // Called by the frontend right after the PRC file is uploaded.
   // Writes prc_name_match + prc_name_match_score. Does NOT block — admin reviews mismatches.
-  app.post("/api/identity/check-prc-name", async (req, res) => {
+  app.post("/api/identity/check-prc-name", requireAuth, async (req, res) => {
     try {
       if (!hsSupa) return res.status(503).json({ error: "Supabase not configured" });
       const { contractorId, prcName } = req.body || {};
@@ -1759,7 +1925,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
   // POST /api/identity/sync/:contractorId — Manually pull latest verification state from Stripe
   // Use this if a webhook is missed/failed. Idempotent — safe to call repeatedly.
-  app.post("/api/identity/sync/:contractorId", async (req, res) => {
+  app.post("/api/identity/sync/:contractorId", requireAuth, async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
       if (!hsSupa) return res.status(503).json({ error: "Supabase not configured" });
@@ -2018,16 +2184,20 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   // ══════════════════════════════════════════════════════════════════════════════
   // POST /api/job/complete — Job-complete pipeline
   //   1. Capture Stripe auth hold (manual PaymentIntent)
-  //   2. Update job status in Harry Spotter Supabase
+  //   2. Update job status in Harriet's Spotless Supabase
   //   3. Send thank-you email to client
   //   4. If client hasn't booked another job → generate 7-day discount code & include
   // ══════════════════════════════════════════════════════════════════════════════
-  app.post("/api/job/complete", async (req, res) => {
+  // Accept either a valid Supabase JWT OR an X-Internal-Secret header for
+  // server-to-server calls from the Supabase `complete-job` Edge Function.
+  app.post("/api/job/complete", requireAuthOrInternal, async (req, res) => {
     try {
       const { jobId, contractorId } = req.body;
       if (!jobId) return res.status(400).json({ error: "jobId is required." });
 
-      // ── Step 1: Get job details from Harry Spotter Supabase (if available) ──
+      const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get("host")}`;
+
+      // ── Step 1: Get job details from Harriet's Spotless Supabase (if available) ──
       let quoteId: string | null = null;
       const now = new Date().toISOString();
 
@@ -2060,50 +2230,82 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         }
       }
 
-      // ── Step 3: Payment already captured at booking. Transfer payout to contractor. ──
+      // ── Step 3: Payment already captured at booking. Transfer payout to
+      // contractor via Stripe Connect. This is the ONLY place payouts are
+      // created — the Supabase Edge Function `process-payouts` no longer
+      // invents `sent` rows without a real Stripe transfer.
       let transferResult: any = null;
+      let payoutStatus: "sent" | "failed" | "skipped" = "skipped";
+      let payoutError: string | null = null;
+      let payAmount = 0;
       if (stripe && contractorId && hsSupa) {
-        try {
-          // Look up contractor's Stripe Connect account
-          const { data: ctr } = await hsSupa
-            .from("contractor_applications")
-            .select("stripe_account_id, pay_amount")
-            .eq("id", contractorId)
-            .single();
+        const { data: ctr } = await hsSupa
+          .from("contractor_applications")
+          .select("stripe_account_id, pay_amount")
+          .eq("id", contractorId)
+          .single();
 
-          if (ctr?.stripe_account_id) {
-            // Flat payout by service_type: $160 / $240 / $320
-            let payAmount = 0;
-            let serviceType: string | null = null;
-            if (hsSupa) {
-              const { data: jobData } = await hsSupa.from("jobs").select("service_type, pay_amount").eq("id", jobId).single();
-              if (jobData?.service_type) {
-                serviceType = jobData.service_type;
-                payAmount = getContractorPayout(jobData.service_type);
-              } else if (jobData?.pay_amount) {
-                payAmount = Number(jobData.pay_amount);
-              }
-              // Persist the flat payout on the job record so reporting is consistent
-              if (serviceType && payAmount > 0) {
-                await hsSupa.from("jobs").update({ pay_amount: payAmount }).eq("id", jobId);
-              }
-            }
+        let serviceType: string | null = null;
+        const { data: jobData } = await hsSupa.from("jobs").select("service_type, pay_amount").eq("id", jobId).single();
+        if (jobData?.service_type) {
+          serviceType = jobData.service_type;
+          payAmount = getContractorPayout(jobData.service_type);
+        } else if (jobData?.pay_amount) {
+          payAmount = Number(jobData.pay_amount);
+        }
+        if (serviceType && payAmount > 0) {
+          await hsSupa.from("jobs").update({ pay_amount: payAmount }).eq("id", jobId);
+        }
 
-            if (payAmount > 0) {
-              transferResult = await stripe.transfers.create({
-                amount: Math.round(payAmount * 100), // cents
-                currency: "cad",
-                destination: ctr.stripe_account_id,
-                description: `Payout for job ${jobId.slice(0, 8)}`,
-                metadata: { jobId, contractorId },
-              });
-              console.log(`[job-complete] Transferred $${payAmount.toFixed(2)} to ${ctr.stripe_account_id}`);
-            }
-          } else {
-            console.log(`[job-complete] Contractor ${contractorId} has no Stripe Connect account. Manual payout needed.`);
+        if (ctr?.stripe_account_id && payAmount > 0) {
+          try {
+            transferResult = await stripe.transfers.create({
+              amount: Math.round(payAmount * 100), // cents
+              currency: "cad",
+              destination: ctr.stripe_account_id,
+              description: `Payout for job ${jobId.slice(0, 8)}`,
+              metadata: { jobId, contractorId },
+            });
+            payoutStatus = "sent";
+            console.log(`[job-complete] Transferred $${payAmount.toFixed(2)} to ${ctr.stripe_account_id}`);
+          } catch (transferErr: any) {
+            payoutStatus = "failed";
+            payoutError = transferErr?.message || String(transferErr);
+            console.error(`[job-complete] Transfer error: ${payoutError}`);
           }
-        } catch (transferErr: any) {
-          console.error(`[job-complete] Transfer error: ${transferErr.message}`);
+        } else {
+          payoutError = !ctr?.stripe_account_id
+            ? "No Stripe Connect account"
+            : "No pay_amount resolved";
+          console.log(`[job-complete] Skipped Stripe transfer: ${payoutError}`);
+        }
+
+        // Record the result in the payouts table. Never mark `sent` without
+        // a real Stripe transfer response.
+        if (payoutStatus === "sent" && transferResult) {
+          await hsSupa.from("payouts").upsert(
+            buildPayoutRecord({
+              jobId,
+              contractorId,
+              amount: payAmount,
+              now,
+              transferId: transferResult.id,
+              error: null,
+            }),
+            { onConflict: "job_id" } as any,
+          );
+        } else if (payoutStatus === "failed") {
+          await hsSupa.from("payouts").upsert(
+            buildPayoutRecord({
+              jobId,
+              contractorId,
+              amount: payAmount,
+              now,
+              transferId: null,
+              error: payoutError,
+            }),
+            { onConflict: "job_id" } as any,
+          );
         }
       }
 
@@ -2160,8 +2362,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       // ── Step 6: Send thank-you email ──
       if (resend && clientEmail) {
         const thankYouSubject = isReturning
-          ? `✨ Thank you for choosing Harry Spotter again, ${clientName}!`
-          : `✨ Thank you for choosing Harry Spotter, ${clientName}!`;
+          ? `✨ Thank you for choosing Harriet's Spotless again, ${clientName}!`
+          : `✨ Thank you for choosing Harriet's Spotless, ${clientName}!`;
 
         let discountHtml = "";
         if (!isReturning && discountCode) {
@@ -2179,11 +2381,11 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         const thankYouHtml = `
           <div style="font-family:'Segoe UI','Nunito',sans-serif;max-width:600px;margin:0 auto;padding:32px;background:#fdf8f0;">
             <div style="text-align:center;margin-bottom:24px;">
-              <img src="https://harryspottercleaning.ca/Completed_Trasp_Logo_for_Harry_Spotter.png" alt="Harry Spotter" width="80" style="border-radius:12px;" />
+              <img src="${baseUrl}/api/assets/logo" alt="Harriet's Spotless" width="80" style="border-radius:12px;" />
             </div>
             <h1 style="color:#6b1629;font-size:22px;text-align:center;margin:0 0 8px;">Thank You${clientName ? `, ${clientName}` : ''}! ✨</h1>
             <p style="color:#555;font-size:15px;text-align:center;margin:0 0 24px;">
-              Your home has been given the Harry Spotter treatment and we hope it sparkles!
+              Your home has been given the Harriet's Spotless treatment and we hope it sparkles!
             </p>
             <div style="background:#fff;border:1px solid #e5e2db;border-radius:12px;padding:20px;margin-bottom:16px;">
               <p style="color:#333;font-size:14px;margin:0 0 8px;"><strong>What's next?</strong></p>
@@ -2196,25 +2398,25 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
               <p style="font-size:28px;margin:0 0 8px;">⭐⭐⭐⭐⭐</p>
               <p style="color:#6b1629;font-size:16px;font-weight:700;margin:0 0 8px;">Loved your clean? Leave us a review!</p>
               <p style="color:#555;font-size:13px;margin:0 0 16px;">Your feedback helps other Ottawa homeowners discover our magical cleaning service. It only takes 30 seconds!</p>
-              <a href="${process.env.GOOGLE_REVIEW_URL || 'https://g.page/r/harryspottercleaning/review'}" style="display:inline-block;background:#ffd03e;color:#6b1629;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:800;font-size:14px;">
+              <a href="${process.env.GOOGLE_REVIEW_URL || 'https://g.page/r/harrietscleaning/review'}" style="display:inline-block;background:#ffd03e;color:#6b1629;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:800;font-size:14px;">
                 ⭐ Leave a 5-Star Review on Google
               </a>
             </div>
             ${discountHtml}
             <div style="text-align:center;margin-top:24px;">
-              <a href="https://harryspottercleaning.ca" style="display:inline-block;background:#a01733;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px;">
+              <a href="https://harrietscleaning.ca" style="display:inline-block;background:#a01733;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px;">
                 ${isReturning ? 'Book Your Next Clean' : 'Book Again & Save 15%'}
               </a>
             </div>
             <p style="color:#999;font-size:11px;text-align:center;margin-top:24px;">
-              Harry Spotter Cleaning Co. — Ottawa's Magical Cleaners<br/>
-              magic@harryspottercleaning.ca | 343-321-6242
+              Harriet's Spotless Cleaning Co. — Ottawa's Magical Cleaners<br/>
+              magic@harrietscleaning.ca | 343-321-6242
             </p>
           </div>`;
 
         try {
           await resend.emails.send({
-            from: process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
+            from: process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
             to: clientEmail,
             subject: thankYouSubject,
             html: thankYouHtml,
@@ -2229,8 +2431,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       if (resend) {
         const contractorLabel = contractorId || "unknown";
         await resend.emails.send({
-          from: process.env.FROM_EMAIL || "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>",
-          to: "magic@harryspottercleaning.ca",
+          from: process.env.FROM_EMAIL || "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>",
+          to: "magic@harrietscleaning.ca",
           subject: `✅ Job Completed — ${clientName || 'Client'} (Job ${jobId.slice(0, 8)})`,
           html: `<div style="font-family:sans-serif;padding:24px;">
             <h2 style="color:#01696f;">Job Completed</h2>
@@ -2249,6 +2451,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         success: true,
         jobId,
         captured: true,
+        payoutStatus,
+        payoutError,
+        transferId: transferResult?.id || null,
         emailSent: !!(resend && clientEmail),
         discountCode: discountCode || null,
         isReturning,
@@ -2257,6 +2462,650 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     } catch (err: any) {
       console.error("[job-complete] Pipeline error:", err?.message || err, err?.stack);
       res.status(500).json({ error: err.message || "Job completion pipeline failed." });
+    }
+  });
+
+  // ── Subscription v1 ───────────────────────────────────────────────────────
+  // Imports are done inline here so the module stays self-contained and the
+  // existing registerRoutes signature is unchanged.
+  const {
+    getSubscriptionCounts,
+    applySubscriptionDiscount,
+    createVisitForSubscription,
+    SUBSCRIPTION_SEAT_CAP,
+  } = await import("./subscriptions.js");
+
+  // ── GET /api/subscriptions/seats — public seat-counter ───────────────────
+  app.get("/api/subscriptions/seats", async (_req, res) => {
+    try {
+      const { active, waitlisted } = await getSubscriptionCounts();
+      res.json({
+        capacity:  SUBSCRIPTION_SEAT_CAP,
+        active,
+        available: Math.max(0, SUBSCRIPTION_SEAT_CAP - active),
+        waitlist:  waitlisted,
+      });
+    } catch (err: any) {
+      console.error("[subscriptions/seats]", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── POST /api/subscriptions — create a new subscription ─────────────────
+  app.post("/api/subscriptions", async (req, res) => {
+    try {
+      const {
+        customer_email,
+        customer_name,
+        customer_phone,
+        service_address,
+        service_type,
+        sqft,
+        frequency         = "biweekly",
+        stripe_payment_method_id,
+        next_visit_at,
+        waitlist_only     = false,
+      } = req.body;
+
+      // ── Waitlist-only path: minimal validation, no Stripe, status=waitlisted
+      if (waitlist_only) {
+        if (!customer_email) {
+          return res.status(400).json({ error: "customer_email is required for waitlist signup." });
+        }
+        if (!hsSupa) {
+          return res.status(503).json({ error: "Database not available." });
+        }
+        const { count: waitlisted } = await hsSupa
+          .from("subscriptions")
+          .select("*", { count: "exact", head: true })
+          .eq("status", "waitlisted");
+
+        const position = (waitlisted ?? 0) + 1;
+
+        const { data: newSub, error: insertErr } = await hsSupa
+          .from("subscriptions")
+          .insert({
+            customer_email,
+            customer_name:             customer_name  || customer_email,
+            customer_phone:            customer_phone || null,
+            service_address:           service_address || "",
+            service_type:              service_type    || "standard",
+            sqft:                      sqft ? parseInt(sqft, 10) : 0,
+            frequency:                 "biweekly",
+            status:                    "waitlisted",
+            stripe_customer_id:        null,
+            stripe_payment_method_id:  null,
+            discount_pct:              15.00,
+            founders_lock:             true,
+            locked_base_price_cents:   0,
+            next_visit_at:             null,
+          })
+          .select("id, status")
+          .single();
+
+        if (insertErr || !newSub) {
+          console.error("[subscriptions/waitlist] Insert error:", insertErr?.message);
+          return res.status(500).json({ error: insertErr?.message || "Failed to join waitlist." });
+        }
+
+        return res.status(201).json({
+          subscription_id: newSub.id,
+          status:          "waitlisted",
+          position,
+          waitlist_total:  position,
+        });
+      }
+
+      // ── Validate required fields ─────────────────────────────────────────
+      if (!customer_email || !customer_name || !service_address || !service_type || !sqft) {
+        return res.status(400).json({
+          error: "customer_email, customer_name, service_address, service_type, and sqft are required.",
+        });
+      }
+
+      // ── Frequency gate (bi-weekly only in v1) ────────────────────────────
+      if (frequency !== "biweekly") {
+        return res.status(400).json({
+          error: "Only 'biweekly' frequency is supported in v1.",
+        });
+      }
+
+      // ── Service type gate ────────────────────────────────────────────────
+      const VALID_SERVICE_TYPES = ["standard", "deep", "moveout", "micro"] as const;
+      if (!VALID_SERVICE_TYPES.includes(service_type)) {
+        return res.status(400).json({
+          error: `service_type must be one of: ${VALID_SERVICE_TYPES.join(", ")}.`,
+        });
+      }
+
+      // ── sqft bounds ───────────────────────────────────────────────────────
+      const sqftNum = parseInt(sqft, 10);
+      if (isNaN(sqftNum) || sqftNum <= 0) {
+        return res.status(400).json({ error: "sqft must be a positive integer." });
+      }
+      if (service_type === "micro" && sqftNum > 800) {
+        return res.status(400).json({ error: "Micro Clean is only available for homes up to 800 sq ft." });
+      }
+
+      // ── Compute locked base price ─────────────────────────────────────────
+      const pricing = computePricing({ serviceType: service_type, squareFootage: sqftNum });
+      const locked_base_price_cents = Math.round(pricing.subtotal * 100);
+
+      // ── Seat cap check ────────────────────────────────────────────────────
+      const { active, waitlisted } = await getSubscriptionCounts();
+      const isWaitlisted = active >= SUBSCRIPTION_SEAT_CAP;
+      const insertStatus = isWaitlisted ? "waitlisted" : "active";
+
+      // ── Stripe: create/fetch customer + attach payment method ─────────────
+      let stripeCustomerId: string | null = null;
+      if (stripe && stripe_payment_method_id) {
+        try {
+          // Check if customer already exists for this email
+          const existing = await stripe.customers.list({ email: customer_email, limit: 1 });
+          if (existing.data.length > 0) {
+            stripeCustomerId = existing.data[0].id;
+          } else {
+            const customer = await stripe.customers.create({
+              email:  customer_email,
+              name:   customer_name,
+              phone:  customer_phone || undefined,
+              metadata: { source: "subscription_v1" },
+            });
+            stripeCustomerId = customer.id;
+          }
+
+          // Attach payment method to customer (idempotent if already attached)
+          const pm = await stripe.paymentMethods.retrieve(stripe_payment_method_id);
+          if (!pm.customer) {
+            await stripe.paymentMethods.attach(stripe_payment_method_id, { customer: stripeCustomerId });
+          }
+
+          // Set as default payment method
+          await stripe.customers.update(stripeCustomerId, {
+            invoice_settings: { default_payment_method: stripe_payment_method_id },
+          });
+        } catch (stripeErr: any) {
+          console.error("[subscriptions] Stripe setup error:", stripeErr.message);
+          // Don't hard-fail — store sub without Stripe IDs if Stripe is unavailable
+        }
+      }
+
+      // ── Default next_visit_at to 14 days from now if not supplied ─────────
+      const nextVisitAt = next_visit_at
+        ? new Date(next_visit_at).toISOString()
+        : new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+
+      // ── Insert into subscriptions table ───────────────────────────────────
+      if (!hsSupa) {
+        return res.status(503).json({ error: "Database not available." });
+      }
+
+      const { data: newSub, error: insertErr } = await hsSupa
+        .from("subscriptions")
+        .insert({
+          customer_email,
+          customer_name,
+          customer_phone:           customer_phone || null,
+          service_address,
+          service_type,
+          sqft:                     sqftNum,
+          frequency,
+          status:                   insertStatus,
+          stripe_customer_id:       stripeCustomerId,
+          stripe_payment_method_id: stripe_payment_method_id || null,
+          discount_pct:             15.00,
+          founders_lock:            true,
+          locked_base_price_cents,
+          next_visit_at:            insertStatus === "active" ? nextVisitAt : null,
+        })
+        .select("id, status")
+        .single();
+
+      if (insertErr || !newSub) {
+        console.error("[subscriptions] Insert error:", insertErr?.message);
+        return res.status(500).json({ error: insertErr?.message || "Failed to create subscription." });
+      }
+
+      // ── Build response ────────────────────────────────────────────────────
+      const response: Record<string, unknown> = {
+        subscription_id: newSub.id,
+        status:          newSub.status,
+        discount_pct:    15,
+        locked_base_price_cents,
+        discounted_visit_cents: applySubscriptionDiscount(locked_base_price_cents, 15),
+      };
+
+      if (isWaitlisted) {
+        response.position = waitlisted + 1;
+      }
+
+      res.status(201).json(response);
+
+    } catch (err: any) {
+      console.error("[subscriptions] POST error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Customer portal routes (Sprint E) — /api/me/* ─────────────────────────
+  const { registerCustomerPortalRoutes } = await import("./customer-portal.js");
+  registerCustomerPortalRoutes(app);
+
+  // ── POST /api/admin/subscriptions/:id/charge-next-visit — manual test ────
+  // Sprint D scaffold: trigger per-visit billing manually for testing.
+  // Full cron automation is deferred to Sprint F.
+  app.post("/api/admin/subscriptions/:id/charge-next-visit", requireAuth, async (req, res) => {
+    try {
+      const subscriptionId = req.params.id;
+      const scheduledAt    = req.body.scheduled_at || new Date().toISOString();
+
+      const result = await createVisitForSubscription(subscriptionId, scheduledAt);
+
+      res.json({
+        success:          true,
+        subscription_id:  subscriptionId,
+        job_id:           result.jobId,
+        payment_intent_id: result.paymentIntentId,
+        charged_cents:    result.chargedCents,
+      });
+    } catch (err: any) {
+      console.error("[admin/charge-next-visit]", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+  // ── GET /api/admin/subscriptions/waitlist — ordered waitlist ─────────────
+  // Sprint F: returns all waitlisted subscribers ordered by created_at.
+  app.get("/api/admin/subscriptions/waitlist", requireAuth, async (_req, res) => {
+    try {
+      if (!hsSupa) return res.status(503).json({ error: "Database not available." });
+
+      const { data, error } = await hsSupa
+        .from("subscriptions")
+        .select("id, customer_email, customer_phone, customer_name, service_address, service_type, sqft, created_at")
+        .eq("status", "waitlisted")
+        .order("created_at", { ascending: true });
+
+      if (error) throw error;
+
+      res.json({
+        waitlist: data ?? [],
+        total:    (data ?? []).length,
+      });
+    } catch (err: any) {
+      console.error("[admin/subscriptions/waitlist]", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── POST /api/admin/subscriptions/:id/promote — promote waitlisted → active
+  // Sprint F: moves a waitlisted subscription to active.
+  // Requires a Stripe payment_method_id in the request body so the customer
+  // can be billed on future visits.
+  app.post("/api/admin/subscriptions/:id/promote", requireAuth, async (req, res) => {
+    try {
+      const subscriptionId     = req.params.id;
+      const { payment_method_id } = req.body;
+
+      if (!payment_method_id) {
+        return res.status(400).json({ error: "payment_method_id is required to promote a subscription." });
+      }
+      if (!hsSupa) return res.status(503).json({ error: "Database not available." });
+
+      // Load the subscription
+      const { data: sub, error: loadErr } = await hsSupa
+        .from("subscriptions")
+        .select("*")
+        .eq("id", subscriptionId)
+        .single();
+
+      if (loadErr || !sub) {
+        return res.status(404).json({ error: "Subscription not found." });
+      }
+      if (sub.status !== "waitlisted") {
+        return res.status(409).json({
+          error: `Subscription is '${sub.status}', not 'waitlisted'. Only waitlisted subscriptions can be promoted.`,
+        });
+      }
+
+      // Verify seat capacity hasn't been exceeded
+      const { active } = await getSubscriptionCounts();
+      if (active >= SUBSCRIPTION_SEAT_CAP) {
+        return res.status(409).json({
+          error: `Seat cap of ${SUBSCRIPTION_SEAT_CAP} reached. Cannot promote until a seat opens.`,
+          active,
+          capacity: SUBSCRIPTION_SEAT_CAP,
+        });
+      }
+
+      // Create or retrieve Stripe customer, then attach the payment method
+      let stripeCustomerId: string | null = sub.stripe_customer_id ?? null;
+
+      if (stripe) {
+        try {
+          if (!stripeCustomerId) {
+            const existing = await stripe.customers.list({ email: sub.customer_email, limit: 1 });
+            if (existing.data.length > 0) {
+              stripeCustomerId = existing.data[0].id;
+            } else {
+              const customer = await stripe.customers.create({
+                email:  sub.customer_email,
+                name:   sub.customer_name,
+                phone:  sub.customer_phone || undefined,
+                metadata: { source: "subscription_v1_promote" },
+              });
+              stripeCustomerId = customer.id;
+            }
+          }
+
+          // Attach payment method if not already attached
+          const pm = await stripe.paymentMethods.retrieve(payment_method_id);
+          if (!pm.customer) {
+            await stripe.paymentMethods.attach(payment_method_id, { customer: stripeCustomerId });
+          }
+          await stripe.customers.update(stripeCustomerId, {
+            invoice_settings: { default_payment_method: payment_method_id },
+          });
+        } catch (stripeErr: any) {
+          console.error("[admin/promote] Stripe error:", stripeErr.message);
+          return res.status(502).json({ error: `Stripe error: ${stripeErr.message}` });
+        }
+      }
+
+      // Compute next_visit_at (14 days from now)
+      const nextVisitAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+
+      // Update subscription
+      const { data: updated, error: updateErr } = await hsSupa
+        .from("subscriptions")
+        .update({
+          status:                   "active",
+          stripe_customer_id:       stripeCustomerId,
+          stripe_payment_method_id: payment_method_id,
+          next_visit_at:            nextVisitAt,
+        })
+        .eq("id", subscriptionId)
+        .select("id, status, next_visit_at")
+        .single();
+
+      if (updateErr || !updated) {
+        throw new Error(updateErr?.message || "Failed to promote subscription.");
+      }
+
+      res.json({
+        success:         true,
+        subscription_id: subscriptionId,
+        status:          updated.status,
+        next_visit_at:   updated.next_visit_at,
+        stripe_customer_id: stripeCustomerId,
+      });
+    } catch (err: any) {
+      console.error("[admin/subscriptions/promote]", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── POST /api/cron/billing-sweep — day-of billing cron endpoint ───────────
+  // Protected by X-Cron-Secret header (CRON_SHARED_SECRET env var).
+  // Call this from Railway cron, GitHub Actions schedule, or curl:
+  //   curl -X POST https://api.harrietscleaning.ca/api/cron/billing-sweep \
+  //        -H "X-Cron-Secret: $CRON_SHARED_SECRET"
+  app.post("/api/cron/billing-sweep", async (req, res) => {
+    const cronSecret = process.env.CRON_SHARED_SECRET;
+    const provided   = req.headers["x-cron-secret"] as string | undefined;
+
+    if (cronSecret && provided !== cronSecret) {
+      return res.status(401).json({ error: "Unauthorized — invalid or missing X-Cron-Secret header." });
+    }
+
+    try {
+      const { runDailyBillingSweep } = await import("./cron/subscription-billing.js");
+      const result = await runDailyBillingSweep();
+
+      console.log("[cron/billing-sweep] Sweep complete:", result);
+      res.json({ success: true, ...result });
+    } catch (err: any) {
+      console.error("[cron/billing-sweep]", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Sprint J — Contractor agreement status endpoints
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * GET /api/me/contractor-agreement-status
+   * Returns the signed agreement details for the authenticated contractor.
+   * Used by ContractorPortal.tsx to populate the "My Agreement" card.
+   */
+  app.get("/api/me/contractor-agreement-status", requireAuth, async (req, res) => {
+    try {
+      if (!hsSupa) return res.status(503).json({ error: "Database unavailable." });
+
+      const { data: contractor, error: cErr } = await hsSupa
+        .from("contractor_applications")
+        .select(
+          "id, full_name, signwell_signed_at, signwell_reclean_clause_version, signwell_document_id",
+        )
+        .eq("email", req.user!.email)
+        .maybeSingle();
+
+      if (cErr || !contractor) {
+        return res.status(404).json({ error: "Contractor record not found." });
+      }
+
+      // If a SignWell document id is on file, attempt to fetch the download URL.
+      let downloadUrl: string | null = null;
+      const docId: string | null = contractor.signwell_document_id ?? null;
+      if (docId) {
+        try {
+          const { getSignwellDocument } = await import("./signwell");
+          const doc = await getSignwellDocument(docId);
+          // SignWell returns `completed_at` when fully signed; download URL lives
+          // at doc.files[0].url (varies by plan) or doc.download_url.
+          downloadUrl =
+            doc?.download_url ??
+            (Array.isArray(doc?.files) && doc.files[0]?.url ? doc.files[0].url : null);
+        } catch {
+          // Non-fatal: we just won't surface a download link
+        }
+      }
+
+      const clauseVersion: number = contractor.signwell_reclean_clause_version ?? 0;
+
+      return res.json({
+        version:                "Harriet's Contractor Agreement v1.0",
+        signed_at:              contractor.signwell_signed_at ?? null,
+        reclean_clause_version: clauseVersion,
+        download_url:           downloadUrl,
+      });
+    } catch (err: any) {
+      console.error("[agreement-status] Error:", err?.message);
+      return res.status(500).json({ error: err.message || "Failed to fetch agreement status." });
+    }
+  });
+
+  /**
+   * POST /api/me/resend-agreement
+   * Contractor-self-serve re-signature request.
+   * Sends a new SignWell signing email to the authenticated contractor.
+   */
+  app.post("/api/me/resend-agreement", requireAuth, async (req, res) => {
+    try {
+      if (!hsSupa) return res.status(503).json({ error: "Database unavailable." });
+
+      const { data: contractor, error: cErr } = await hsSupa
+        .from("contractor_applications")
+        .select("id, full_name, email, signwell_reclean_clause_version")
+        .eq("email", req.user!.email)
+        .maybeSingle();
+
+      if (cErr || !contractor) {
+        return res.status(404).json({ error: "Contractor record not found." });
+      }
+
+      const { sendContractorAgreement } = await import("./signwell");
+      const { documentId, signingUrl } = await sendContractorAgreement({
+        contractorId:    contractor.id,
+        contractorName:  contractor.full_name,
+        contractorEmail: contractor.email,
+        isResend:        true,
+      });
+
+      // Record the new document id so status can fetch the download URL later
+      await hsSupa
+        .from("contractor_applications")
+        .update({ signwell_resend_document_id: documentId, updated_at: new Date().toISOString() })
+        .eq("id", contractor.id);
+
+      console.log(`[agreement] Self-serve resend to ${contractor.email}, document=${documentId}`);
+
+      return res.json({
+        success:    true,
+        documentId,
+        signingUrl,
+        message:    "Re-signature request sent. Check your email for the signing link.",
+      });
+    } catch (err: any) {
+      console.error("[agreement] Resend error:", err?.message);
+      return res.status(500).json({ error: err.message || "Failed to send re-signature request." });
+    }
+  });
+
+  // ── POST /api/admin/jobs/:id/cancel — Admin-only job cancellation ─────────
+  //
+  // Records cancellation intent and computes the fee (0 / 50% / 100% of job
+  // total). Does NOT auto-charge Stripe in this sprint — admin manually charges
+  // via the Stripe dashboard.
+  //
+  // TODO: Auto-charge via Stripe is a follow-up sprint — admin can manually
+  //       charge via Stripe dashboard for now.
+  app.post("/api/admin/jobs/:id/cancel", requireAuth, async (req, res) => {
+    try {
+      const { id: jobId } = req.params;
+      const { reason, fee_pct } = req.body as { reason?: string; fee_pct?: number };
+
+      if (typeof fee_pct !== "number" || ![0, 50, 100].includes(fee_pct)) {
+        return res.status(400).json({ error: "fee_pct must be 0, 50, or 100." });
+      }
+      if (!reason || typeof reason !== "string" || reason.trim().length === 0) {
+        return res.status(400).json({ error: "reason is required." });
+      }
+      if (!hsSupa) {
+        return res.status(503).json({ error: "Database unavailable." });
+      }
+
+      // Fetch the job so we can compute the fee from the recorded total
+      const { data: job, error: fetchErr } = await hsSupa
+        .from("jobs")
+        .select("id, total_cents, cancellation_fee_cents, cancelled_at")
+        .eq("id", jobId)
+        .single();
+
+      if (fetchErr || !job) {
+        return res.status(404).json({ error: "Job not found." });
+      }
+      if (job.cancelled_at) {
+        return res.status(409).json({ error: "Job is already cancelled." });
+      }
+
+      const jobTotalCents: number = job.total_cents ?? 0;
+      const feeCents = Math.round((jobTotalCents * fee_pct) / 100);
+
+      const { data: updated, error: updateErr } = await hsSupa
+        .from("jobs")
+        .update({
+          cancelled_at:           new Date().toISOString(),
+          cancellation_reason:    reason.trim(),
+          cancellation_fee_cents: feeCents,
+        })
+        .eq("id", jobId)
+        .select()
+        .single();
+
+      if (updateErr || !updated) {
+        console.error("[admin/cancel-job] Update error:", updateErr?.message);
+        return res.status(500).json({ error: "Failed to record cancellation." });
+      }
+
+      return res.json({
+        job: updated,
+        fee_pct,
+        cancellation_fee_cents: feeCents,
+        note: "Fee recorded. Stripe auto-charge is a follow-up sprint — charge manually via Stripe dashboard.",
+      });
+    } catch (err: any) {
+      console.error("[admin/cancel-job] Error:", err?.message || err);
+      return res.status(500).json({ error: err.message || "Internal server error." });
+    }
+  });
+
+  // ── POST /api/me/subscription/skip-next — Customer portal: skip next visit ─
+  //
+  // Authenticated customer endpoint. Skips the next scheduled visit.
+  // If the skip is made less than 48 hours before next_visit_at, increments
+  // the skipped_visits_late counter via recordLateSkip().
+  app.post("/api/me/subscription/skip-next", requireAuth, async (req, res) => {
+    try {
+      if (!hsSupa) {
+        return res.status(503).json({ error: "Database unavailable." });
+      }
+      if (!req.user?.email) {
+        return res.status(401).json({ error: "Unauthorized." });
+      }
+
+      // Look up the active subscription belonging to the authenticated user
+      const { data: sub, error: subErr } = await hsSupa
+        .from("subscriptions")
+        .select("id, status, next_visit_at, skipped_visits_late")
+        .eq("customer_email", req.user.email)
+        .in("status", ["active", "paused"])
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .single();
+
+      if (subErr || !sub) {
+        return res.status(404).json({ error: "No active subscription found for this account." });
+      }
+      if (!sub.next_visit_at) {
+        return res.status(400).json({ error: "No upcoming visit is scheduled on this subscription." });
+      }
+
+      const nextVisitMs = new Date(sub.next_visit_at).getTime();
+      const msUntilVisit = nextVisitMs - Date.now();
+      const isLate = msUntilVisit < LATE_SKIP_THRESHOLD_MS;
+
+      // Advance next_visit_at by 14 days (bi-weekly cycle)
+      const newNextVisit = new Date(nextVisitMs + 14 * 24 * 60 * 60 * 1000).toISOString();
+
+      const { error: updateErr } = await hsSupa
+        .from("subscriptions")
+        .update({ next_visit_at: newNextVisit })
+        .eq("id", sub.id);
+
+      if (updateErr) {
+        console.error("[me/subscription/skip-next] Update error:", updateErr.message);
+        return res.status(500).json({ error: "Failed to skip visit." });
+      }
+
+      // If the skip is within the 48-hour window, increment the late-skip counter
+      let lateSkipCount: number | null = null;
+      if (isLate) {
+        lateSkipCount = await recordLateSkip(sub.id);
+      }
+
+      return res.json({
+        skipped:         true,
+        was_late:        isLate,
+        next_visit_at:   newNextVisit,
+        late_skip_count: lateSkipCount,
+        note: isLate
+          ? "Skip recorded within 48-hour window. A 50% fee may apply — admin has been notified."
+          : "Skip recorded with sufficient notice. No fee applies.",
+      });
+    } catch (err: any) {
+      console.error("[me/subscription/skip-next] Error:", err?.message || err);
+      return res.status(500).json({ error: err.message || "Internal server error." });
     }
   });
 }
@@ -2317,7 +3166,7 @@ function buildBookingHtml(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Book Your Cleaning — Harry Spotter Cleaning Co.</title>
+  <title>Book Your Cleaning — Harriet's Spotless Cleaning Co.</title>
   <script src="https://js.stripe.com/v3/"><\/script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
@@ -2423,10 +3272,10 @@ function buildBookingHtml(
     <div class="header">
       <div class="header-top">
         <div class="logo-wrap">
-          <img src="${logoUrl}" alt="Harry Spotter Cleaning Co." onerror="this.style.display='none'">
+          <img src="${logoUrl}" alt="Harriet's Spotless Cleaning Co." onerror="this.style.display='none'">
         </div>
         <div class="header-text">
-          <h1>Harry Spotter Cleaning Co.</h1>
+          <h1>Harriet's Spotless Cleaning Co.</h1>
           <p>Professional Cleaning Services &middot; Ontario, Canada</p>
         </div>
       </div>
@@ -2467,7 +3316,7 @@ function buildBookingHtml(
         <div class="step-title">Service Agreement &amp; Terms</div>
       </div>
       <div class="terms-box">
-        <h3>Harry Spotter Cleaning Co. &mdash; Service Agreement</h3>
+        <h3>Harriet's Spotless Cleaning Co. &mdash; Service Agreement</h3>
 
         <div class="terms-section">
           <h4>Supplies &amp; Access</h4>
@@ -2480,7 +3329,7 @@ function buildBookingHtml(
 
         <div class="terms-section">
           <h4>Payment</h4>
-          <p>Full payment is collected at the time of booking. All transactions are processed securely through Stripe. By booking, you authorize Harry Spotter Cleaning Co. to charge the quoted amount to your payment method.</p>
+          <p>Full payment is collected at the time of booking. All transactions are processed securely through Stripe. By booking, you authorize Harriet's Spotless Cleaning Co. to charge the quoted amount to your payment method.</p>
         </div>
 
         <div class="terms-section">
@@ -2500,7 +3349,7 @@ function buildBookingHtml(
 
         <div class="terms-section">
           <h4>Liability</h4>
-          <p>Harry Spotter Cleaning Co. is not responsible for pre-existing damage, wear and tear, fragile or unsecured items, or damage caused by concealed hazards. Please secure valuables and fragile items before your appointment. This agreement is governed by the laws of the Province of Ontario, Canada.</p>
+          <p>Harriet's Spotless Cleaning Co. is not responsible for pre-existing damage, wear and tear, fragile or unsecured items, or damage caused by concealed hazards. Please secure valuables and fragile items before your appointment. This agreement is governed by the laws of the Province of Ontario, Canada.</p>
         </div>
       </div>
 
@@ -2535,7 +3384,7 @@ function buildBookingHtml(
     </div>
 
     <div class="footer">
-      <p>Harry Spotter Cleaning Co. &middot; Quote #${quote.id.slice(0, 8)} &middot; <a href="https://harryspottercleaning.ca">harryspottercleaning.ca</a></p>
+      <p>Harriet's Spotless Cleaning Co. &middot; Quote #${quote.id.slice(0, 8)} &middot; <a href="https://harrietscleaning.ca">harrietscleaning.ca</a></p>
     </div>
   </div>
 
