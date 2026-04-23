@@ -1,15 +1,22 @@
-// ── Admin notification emails ────────────────────────────────────────────────
-// Sent to ADMIN_NOTIFICATION_EMAIL (default admin@harryspottercleaning.ca) on
-// three events: new contractor signup, new-client first booking, repeat-client
-// booking. All sends are fire-and-forget — failures must never bubble up to
-// the triggering operation.
-//
-// Uses the same Resend client / FROM_EMAIL sender as the other transactional
-// emails in server/routes.ts.
+/**
+ * Admin notification email helpers.
+ *
+ * Covers:
+ *   - manual-assignment-needed (gated by ADMIN_BOOKING_NOTIFICATIONS_ENABLED)
+ *   - new contractor signup
+ *   - new-client first booking
+ *   - repeat-client booking
+ *
+ * All admin notifications funnel through either `sendAdminNotification`
+ * (for the gated manual-assignment flow) or the internal `send` helper
+ * (for signup/booking notifications), so subject/from/gating stay consistent.
+ */
 
 import { Resend } from "resend";
 
+// ── Config ───────────────────────────────────────────────────────────────────
 const DEFAULT_ADMIN_EMAIL = "admin@harryspottercleaning.ca";
+const MANUAL_ASSIGN_ADMIN_EMAIL = "magic@harryspottercleaning.ca";
 const DEFAULT_FROM = "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>";
 
 export function getAdminEmail(): string {
@@ -17,13 +24,128 @@ export function getAdminEmail(): string {
 }
 
 export function getFromEmail(): string {
-  // Prefer EMAIL_FROM_ADDRESS + EMAIL_FROM_NAME (spec), fall back to FROM_EMAIL
-  // (existing repo env var) and finally to the hardcoded verified sender.
   const addr = process.env.EMAIL_FROM_ADDRESS;
   const name = process.env.EMAIL_FROM_NAME;
   if (addr) return name ? `${name} <${addr}>` : addr;
   return process.env.FROM_EMAIL || DEFAULT_FROM;
 }
+
+// ── Manual-assignment path (gated) ───────────────────────────────────────────
+
+export interface AdminNotificationRenderedEmail {
+  subject: string;
+  html: string;
+  text: string;
+}
+
+export interface AdminNotifier {
+  emails: {
+    send: (args: {
+      from: string;
+      to: string;
+      subject: string;
+      html: string;
+      text?: string;
+    }) => Promise<unknown>;
+  };
+}
+
+export function adminNotificationsEnabled(): boolean {
+  const raw = (process.env.ADMIN_BOOKING_NOTIFICATIONS_ENABLED || "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
+export async function sendAdminNotification(
+  resend: AdminNotifier | Resend | null | undefined,
+  rendered: AdminNotificationRenderedEmail,
+): Promise<{ sent: boolean; skipped?: "disabled" | "no_client"; error?: string }> {
+  if (!adminNotificationsEnabled()) return { sent: false, skipped: "disabled" };
+  if (!resend) return { sent: false, skipped: "no_client" };
+  try {
+    await (resend as AdminNotifier).emails.send({
+      from: getFromEmail(),
+      to: MANUAL_ASSIGN_ADMIN_EMAIL,
+      subject: rendered.subject,
+      html: rendered.html,
+      text: rendered.text,
+    });
+    return { sent: true };
+  } catch (err: any) {
+    return { sent: false, error: err?.message || String(err) };
+  }
+}
+
+export interface ManualAssignmentJob {
+  id: string;
+  slot_start_at?: string | Date | null;
+  service_address?: string | null;
+  client_name?: string | null;
+  client_email?: string | null;
+  pets_in_home?: boolean | null;
+  reason?: string | null;
+}
+
+export function renderManualAssignmentNeededNotification(
+  job: ManualAssignmentJob,
+): AdminNotificationRenderedEmail {
+  const jobId = job.id;
+  const shortId = jobId.length > 8 ? jobId.slice(0, 8) : jobId;
+  const slotLabel = job.slot_start_at
+    ? new Date(job.slot_start_at as any).toLocaleString("en-CA", {
+        timeZone: "America/Toronto",
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      })
+    : "unscheduled";
+  const reason =
+    job.reason ||
+    (job.pets_in_home === true
+      ? "No compatible contractor (pets-in-home job with no allergy-free, pet-comfortable contractor available)"
+      : "No compatible contractor available");
+
+  const subject = `⚠️ Manual assignment needed — Job ${shortId}`;
+
+  const html = `<div style="font-family:sans-serif;padding:24px;max-width:600px;">
+      <h2 style="color:#a01733;margin:0 0 8px;">Manual assignment needed</h2>
+      <p style="color:#555;font-size:14px;margin:0 0 16px;">
+        A job couldn't be auto-matched to a contractor. Please assign one manually in the admin dashboard.
+      </p>
+      <div style="background:#fff;border:1px solid #e5e2db;border-radius:8px;padding:16px;">
+        <p style="margin:0 0 6px;"><strong>Job ID:</strong> ${jobId}</p>
+        <p style="margin:0 0 6px;"><strong>When:</strong> ${slotLabel}</p>
+        <p style="margin:0 0 6px;"><strong>Where:</strong> ${job.service_address || "N/A"}</p>
+        <p style="margin:0 0 6px;"><strong>Client:</strong> ${job.client_name || "N/A"}${job.client_email ? ` (${job.client_email})` : ""}</p>
+        <p style="margin:0 0 6px;"><strong>Pets in home:</strong> ${job.pets_in_home === true ? "Yes" : job.pets_in_home === false ? "No" : "Unsure"}</p>
+        <p style="margin:0;"><strong>Reason:</strong> ${reason}</p>
+      </div>
+    </div>`;
+
+  const text = `Manual assignment needed
+
+Job ID: ${jobId}
+When: ${slotLabel}
+Where: ${job.service_address || "N/A"}
+Client: ${job.client_name || "N/A"}${job.client_email ? ` (${job.client_email})` : ""}
+Pets in home: ${job.pets_in_home === true ? "Yes" : job.pets_in_home === false ? "No" : "Unsure"}
+Reason: ${reason}
+`;
+
+  return { subject, html, text };
+}
+
+export async function sendManualAssignmentNeededNotification(
+  resend: AdminNotifier | Resend | null | undefined,
+  job: ManualAssignmentJob,
+) {
+  const rendered = renderManualAssignmentNeededNotification(job);
+  return sendAdminNotification(resend, rendered);
+}
+
+// ── Signup + booking notifications (ungated) ─────────────────────────────────
 
 let _resend: Resend | null | undefined;
 function getResend(): Resend | null {
@@ -32,14 +154,11 @@ function getResend(): Resend | null {
   return _resend;
 }
 
-// Test-only seam: allow unit tests to inject a mock Resend instance.
 export function __setResendForTests(r: Resend | null): void {
   _resend = r;
 }
 
 function torontoTimestamp(d: Date = new Date()): string {
-  // Format ISO-like string in America/Toronto (approximation good enough for the
-  // body of an internal notification).
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Toronto",
     year: "numeric", month: "2-digit", day: "2-digit",
@@ -97,7 +216,6 @@ async function send(opts: {
   }
 }
 
-// ── Event 1: New contractor signup ──────────────────────────────────────────
 export interface NewContractorInput {
   email: string;
   authUserId: string;
@@ -123,7 +241,6 @@ export async function sendNewContractorNotification(input: NewContractorInput) {
   return send({ subject, text, eventType: "contractor_signup", eventKey: input.authUserId });
 }
 
-// ── Events 2 & 3: Booking notifications ─────────────────────────────────────
 export interface BookingNotificationInput {
   email: string;
   name: string;
@@ -131,9 +248,7 @@ export interface BookingNotificationInput {
   serviceType: string;
   total: number;
   address: string;
-  /** ISO start of the (single) appointment, or null for multi-session bookings. */
   appointmentStart?: string | null;
-  /** Number of slots in this booking — >1 renders as "multi-session". */
   slotCount?: number;
 }
 
@@ -171,7 +286,6 @@ export async function sendNewClientBookingNotification(input: BookingNotificatio
 }
 
 export interface RepeatClientBookingInput extends BookingNotificationInput {
-  /** Total count of bookings for this client INCLUDING the current one. */
   totalBookings: number;
 }
 
@@ -196,10 +310,6 @@ export async function sendRepeatClientBookingNotification(input: RepeatClientBoo
   const { subject, text } = buildRepeatClientBookingEmail(input);
   return send({ subject, text, eventType: "repeat_client_booking", eventKey: input.email });
 }
-
-// ── Fire-and-forget wrappers ────────────────────────────────────────────────
-// These never throw; they run the send in the background so callers inside a
-// request handler don't block on network I/O.
 
 export function fireNewContractorNotification(input: NewContractorInput): void {
   void sendNewContractorNotification(input).catch((e) =>

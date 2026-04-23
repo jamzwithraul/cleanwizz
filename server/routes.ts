@@ -16,6 +16,7 @@ import {
 import { requireAuth, requireAuthOrInternal, ipRateLimit } from "./middleware/requireAuth";
 import { validateBookingSlots, generateBookingReference, type SlotInput } from "./booking";
 import { buildPayoutRecord } from "./payouts";
+import { attachReminderEndpoints } from "./clientReminders";
 import { recordLateSkip, LATE_SKIP_THRESHOLD_MS } from "./subscriptions";
 
 // ── Harriet's Spotless Supabase (contractor data) ──────────────────────────────────
@@ -554,6 +555,17 @@ function buildEmailHtml(client: any, quote: any, items: any[], baseUrl: string) 
 
 // ── Route Registration ────────────────────────────────────────────────────────
 export async function registerRoutes(_httpServer: Server, app: Express) {
+
+  // ── Internal: 24h client reminder emails ──────────────────────────────────
+  // POST /api/internal/send-client-reminder            (reminder_type='initial')
+  // POST /api/internal/send-client-reminder-update     (reminder_type='update')
+  // Both guarded by X-Internal-Secret, called from the Supabase cron / Edge
+  // Function on harryspottercleaning.ca.
+  attachReminderEndpoints(app, () => ({
+    supabase: hsSupa,
+    resend,
+    internalSecret: process.env.INTERNAL_SERVICE_SECRET || "",
+  }));
 
   // ── Internal: Supabase Auth user-created webhook ──────────────────────────
   // Called by Supabase Auth when a new user is created. Fires the admin
