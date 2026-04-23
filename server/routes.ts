@@ -342,7 +342,7 @@ export function computePricing(input: ComputePricingInput): PricingBreakdown {
       hst,
       total,
       lineItems: [
-        { label: "Micro Clean \u2014 flat rate (homes up to 800 sq ft)", quantity: 1, unitPrice: flatPrice, lineTotal: flatPrice, category: "base" },
+        { label: "Micro Clean — flat rate (homes up to 800 sq ft)", quantity: 1, unitPrice: flatPrice, lineTotal: flatPrice, category: "base" },
       ],
     };
   }
