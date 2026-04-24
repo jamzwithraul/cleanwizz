@@ -94,7 +94,7 @@ export type Settings = typeof settings.$inferSelect;
 export const emailSignups = sqliteTable("email_signups", {
   id: text("id").primaryKey(),
   email: text("email").notNull(),
-  source: text("source").notNull(),            // "inline_checkbox" | "promo_popup"
+  source: text("source").notNull(),            // "inline_checkbox" | "promo_popup" | "booking_implied"
   consentText: text("consent_text").notNull(),
   consentAt: text("consent_at").notNull(),
   ipAddress: text("ip_address"),
@@ -113,7 +113,7 @@ export type EmailSignup = typeof emailSignups.$inferSelect;
 
 export const emailSignupRequestSchema = z.object({
   email: z.string().email("Valid email required"),
-  source: z.enum(["inline_checkbox", "promo_popup"]),
+  source: z.enum(["inline_checkbox", "promo_popup", "booking_implied"]),
   consentText: z.string().min(1, "consentText required"),
   bookingId: z.string().nullish(),
 });
@@ -146,7 +146,7 @@ export const quoteFormSchema = z.object({
   // row, or set emailConsent=true to have the server record consent inline.
   emailConsent: z.boolean().default(false),
   emailConsentId: z.string().nullish(),
-  emailConsentSource: z.enum(["inline_checkbox", "promo_popup"]).nullish(),
+  emailConsentSource: z.enum(["inline_checkbox", "promo_popup", "booking_implied"]).nullish(),
   emailConsentText: z.string().nullish(),
 });
 
