@@ -54,7 +54,6 @@ describe("Micro Clean tier — pricing", () => {
       serviceType: "micro",
       squareFootage: 600,
       welcomeEligible: true,
-      multiEligible: true,
     });
     expect(result.discountablePortion).toBe(0);
     expect(result.discount).toBe(0);
