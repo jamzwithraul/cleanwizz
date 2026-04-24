@@ -275,10 +275,11 @@ const CONTRACTOR_PAYOUT: Record<ServiceType, number> = {
   micro:    120,
 };
 
-// Non-stacking discount rates. Take the larger of the eligible discounts.
+// Discount rates. Only one discount applies per booking (welcome for promo codes
+// on one-off bookings; subscriptions get their own rate from the subscriptions table).
+// Multi-booking discount was removed in favor of rewarding recurring commitments.
 const DISCOUNT_RATES = {
   welcome: 0.15,      // WELCOME15 single-booking promo
-  multi:   0.20,      // 2+ sessions multi-booking
 };
 
 const OVEN_NOTICE = "Easy-Off is used for deep oven cleaning. This product emits a strong odour. We recommend opening windows for ventilation during and after the service.";
@@ -293,7 +294,6 @@ export interface ComputePricingInput {
   sessions?: number;
   discountCode?: string | null;
   welcomeEligible?: boolean; // true if this code is a welcome/15% promo
-  multiEligible?: boolean;   // true if sessions >= 2
   settings?: any;            // optional: pricing_settings for addon prices
 }
 
@@ -360,16 +360,11 @@ export function computePricing(input: ComputePricingInput): PricingBreakdown {
   const sqftPrice = round2(sqft * sqftRate);
   const basePrice = Math.max(minimum, sqftPrice);
 
-  // Determine applicable discount (NON-STACKING — take the larger)
+  // Determine applicable discount. Only welcome/promo-code discounts apply to
+  // one-off bookings; subscription discounts are handled separately at billing time.
   let discountPct = 0;
   let discountLabel: string | null = null;
-  if (input.multiEligible && input.welcomeEligible) {
-    discountPct = Math.max(DISCOUNT_RATES.multi, DISCOUNT_RATES.welcome);
-    discountLabel = discountPct === DISCOUNT_RATES.multi ? "Multi-Booking (20%)" : "Welcome (15%)";
-  } else if (input.multiEligible) {
-    discountPct = DISCOUNT_RATES.multi;
-    discountLabel = "Multi-Booking (20%)";
-  } else if (input.welcomeEligible) {
+  if (input.welcomeEligible) {
     discountPct = DISCOUNT_RATES.welcome;
     discountLabel = "Welcome (15%)";
   }
@@ -814,9 +809,11 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         });
       }
 
-      // Pricing — new per-service engine (non-stacking discount, discount only on portion above minimum)
-      const sessions = form.numberOfSessions ?? 1;
-      const multiEligibleRaw = sessions >= 2;
+      // Pricing — per-service engine (discount only on portion above minimum).
+      // Multi-booking was removed; all one-off bookings are single-session. Clients
+      // who want repeat service enroll in a bi-weekly subscription for a per-visit
+      // discount handled separately at billing time.
+      const sessions = 1;
 
       // Validate promo code. A code is "welcome-eligible" if it exists, is active,
       // and is a percent-type discount (we treat any active percent code as a welcome-style 15% promo).
@@ -861,8 +858,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         console.error("[consent] Failed to record implied-consent audit row:", e?.message);
       }
 
-      // Discount eligibility — promo code + multi-session — applied unconditionally.
-      const multiEligible   = multiEligibleRaw;
+      // Discount eligibility — promo code only. Multi-booking is gone.
       const welcomeEligible = welcomeEligibleRaw;
 
       const pricing = computePricing({
@@ -872,7 +868,6 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         sessions,
         discountCode: usedPromo,
         welcomeEligible,
-        multiEligible,
         settings: s,
       });
 
@@ -938,7 +933,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         addOnsTotal: round2(pricing.addOnsTotal * sessions),
         addons:      rawItems.filter(i => i.category === "addon").map(i => ({ label: i.label, amount: i.lineTotal })),
         numberOfSessions: sessions,
-        multiDiscount: pricing.discountLabel === "Multi-Booking (20%)" ? discount : 0,
+        multiDiscount: 0,
         promoDiscount: pricing.discountLabel === "Welcome (15%)" ? discount : 0,
         subtotal,
         discount,
@@ -2547,7 +2542,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
             status:                    "waitlisted",
             stripe_customer_id:        null,
             stripe_payment_method_id:  null,
-            discount_pct:              15.00,
+            discount_pct:              20.00,
             founders_lock:             true,
             locked_base_price_cents:   0,
             next_visit_at:             null,
@@ -2665,7 +2660,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           status:                   insertStatus,
           stripe_customer_id:       stripeCustomerId,
           stripe_payment_method_id: stripe_payment_method_id || null,
-          discount_pct:             15.00,
+          discount_pct:             20.00,
           founders_lock:            true,
           locked_base_price_cents,
           next_visit_at:            insertStatus === "active" ? nextVisitAt : null,
@@ -2682,9 +2677,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       const response: Record<string, unknown> = {
         subscription_id: newSub.id,
         status:          newSub.status,
-        discount_pct:    15,
+        discount_pct:    20,
         locked_base_price_cents,
-        discounted_visit_cents: applySubscriptionDiscount(locked_base_price_cents, 15),
+        discounted_visit_cents: applySubscriptionDiscount(locked_base_price_cents, 20),
       };
 
       if (isWaitlisted) {

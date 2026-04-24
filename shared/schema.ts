@@ -135,7 +135,9 @@ export const quoteFormSchema = z.object({
   // services
   serviceType: z.enum(["standard", "deep", "moveout", "micro"]).default("standard"),
   addons: z.array(z.enum(["fridge", "windows", "baseboards", "grout", "oven", "laundry"])).default([]),
-  // number of sessions (2+ gets 20% multi-booking discount)
+  // number of sessions. Kept for backwards compat but the booking endpoint
+  // now forces sessions=1 regardless (multi-booking was removed in favor of
+  // bi-weekly subscriptions). Clients who want repeat service subscribe.
   numberOfSessions: z.number().int().min(1).max(12).default(1),
   // promo
   promoCode: z.string().default(""),
