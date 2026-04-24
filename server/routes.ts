@@ -820,10 +820,17 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       let welcomeEligibleRaw = false;
       let usedPromo: string | null = null;
       if (form.promoCode) {
-        const pc = await db.getPromoCode(form.promoCode);
-        if (pc && pc.active) {
-          welcomeEligibleRaw = true;
-          usedPromo = pc.code;
+        // Defensive: a bad promo code (missing table, invalid code, expired)
+        // must never 500 the whole booking endpoint. Log and fall through as
+        // "no discount applied" — the client still books at full price.
+        try {
+          const pc = await db.getPromoCode(form.promoCode);
+          if (pc && pc.active) {
+            welcomeEligibleRaw = true;
+            usedPromo = pc.code;
+          }
+        } catch (promoErr: any) {
+          console.error("[booking] promo code lookup failed, ignoring:", promoErr?.message || promoErr);
         }
       }
 
