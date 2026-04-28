@@ -3,7 +3,7 @@
  *
  * Flow:
  *   1. Validate `X-Internal-Secret` header (guard).
- *   2. Fetch job + customer + contractor from Harry Spotter Supabase.
+ *   2. Fetch job + customer + contractor from Harriet's Spotless Supabase.
  *   3. Set `jobs.reminder_sent_at = NOW()` BEFORE the Resend call (idempotency).
  *   4. Insert into `sent_client_reminders` with ON CONFLICT DO NOTHING.
  *      - If no new row was inserted, the reminder was already delivered —
@@ -51,7 +51,7 @@ function fromAddress(deps: SendClientReminderDeps): string {
   return (
     deps.fromEmail ||
     process.env.FROM_EMAIL ||
-    "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>"
+    "Harriet's Spotless Cleaning Co. <bookings@harrietscleaning.ca>"
   );
 }
 

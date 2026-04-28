@@ -14,8 +14,8 @@ describe("auth-user-created hook contract", () => {
 
   beforeEach(() => {
     process.env.RESEND_API_KEY = "re_test_key";
-    process.env.ADMIN_NOTIFICATION_EMAIL = "admin@harryspottercleaning.ca";
-    process.env.FROM_EMAIL = "Harry Spotter <magic@harryspottercleaning.ca>";
+    process.env.ADMIN_NOTIFICATION_EMAIL = "admin@harrietscleaning.ca";
+    process.env.FROM_EMAIL = "Harriet's Spotless <magic@harrietscleaning.ca>";
     delete process.env.EMAIL_FROM_ADDRESS;
     delete process.env.EMAIL_FROM_NAME;
     sendSpy = vi.fn().mockResolvedValue({ id: "email-id" });
@@ -80,7 +80,7 @@ describe("auth-user-created hook contract", () => {
     expect(result.sent).toBe(true);
     expect(sendSpy).toHaveBeenCalledTimes(1);
     const call = sendSpy.mock.calls[0][0];
-    expect(call.to).toBe("admin@harryspottercleaning.ca");
+    expect(call.to).toBe("admin@harrietscleaning.ca");
     expect(call.subject).toBe("New contractor signup — new@contractor.com");
     expect(call.text).toContain("User ID: uid-xyz");
   });

@@ -15,9 +15,9 @@
 import { Resend } from "resend";
 
 // ── Config ───────────────────────────────────────────────────────────────────
-const DEFAULT_ADMIN_EMAIL = "admin@harryspottercleaning.ca";
-const MANUAL_ASSIGN_ADMIN_EMAIL = "magic@harryspottercleaning.ca";
-const DEFAULT_FROM = "Harry Spotter Cleaning Co. <magic@harryspottercleaning.ca>";
+const DEFAULT_ADMIN_EMAIL = "admin@harrietscleaning.ca";
+const MANUAL_ASSIGN_ADMIN_EMAIL = "magic@harrietscleaning.ca";
+const DEFAULT_FROM = "Harriet's Spotless Cleaning Co. <magic@harrietscleaning.ca>";
 
 export function getAdminEmail(): string {
   return process.env.ADMIN_NOTIFICATION_EMAIL || DEFAULT_ADMIN_EMAIL;
@@ -232,7 +232,7 @@ export function buildNewContractorEmail(input: NewContractorInput): { subject: s
       `User ID: ${input.authUserId}\n` +
       `Timestamp: ${ts}\n\n` +
       `Next step: they'll complete the contractor application. You'll see them in the admin portal once they submit.\n\n` +
-      `— Harry Spotter Cleaning Co. system`,
+      `— Harriet's Spotless Cleaning Co. system`,
   };
 }
 
@@ -276,7 +276,7 @@ export function buildNewClientBookingEmail(input: BookingNotificationInput): { s
       `Total: $${input.total.toFixed(2)}\n` +
       `Address: ${input.address}\n` +
       `Appointment: ${formatAppointment(input)}\n\n` +
-      `— Harry Spotter Cleaning Co. system`,
+      `— Harriet's Spotless Cleaning Co. system`,
   };
 }
 
@@ -302,7 +302,7 @@ export function buildRepeatClientBookingEmail(input: RepeatClientBookingInput): 
       `Address: ${input.address}\n` +
       `Appointment: ${formatAppointment(input)}\n` +
       `Total bookings by this client: ${input.totalBookings}\n\n` +
-      `— Harry Spotter Cleaning Co. system`,
+      `— Harriet's Spotless Cleaning Co. system`,
   };
 }
 

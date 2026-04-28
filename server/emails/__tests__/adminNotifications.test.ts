@@ -24,7 +24,7 @@ describe("buildNewContractorEmail", () => {
     expect(text).toContain("User ID: uuid-123");
     expect(text).toContain("America/Toronto");
     expect(text).toContain("Next step: they'll complete the contractor application");
-    expect(text).toContain("— Harry Spotter Cleaning Co. system");
+    expect(text).toContain("— Harriet's Spotless Cleaning Co. system");
   });
 });
 
@@ -92,9 +92,9 @@ describe("getAdminEmail", () => {
   const orig = process.env.ADMIN_NOTIFICATION_EMAIL;
   afterEach(() => { process.env.ADMIN_NOTIFICATION_EMAIL = orig; });
 
-  it("defaults to admin@harryspottercleaning.ca", () => {
+  it("defaults to admin@harrietscleaning.ca", () => {
     delete process.env.ADMIN_NOTIFICATION_EMAIL;
-    expect(getAdminEmail()).toBe("admin@harryspottercleaning.ca");
+    expect(getAdminEmail()).toBe("admin@harrietscleaning.ca");
   });
 
   it("honors the env var override", () => {
@@ -123,8 +123,8 @@ describe("getFromEmail", () => {
   it("falls back to FROM_EMAIL", () => {
     delete process.env.EMAIL_FROM_ADDRESS;
     delete process.env.EMAIL_FROM_NAME;
-    process.env.FROM_EMAIL = "magic@harryspottercleaning.ca";
-    expect(getFromEmail()).toBe("magic@harryspottercleaning.ca");
+    process.env.FROM_EMAIL = "magic@harrietscleaning.ca";
+    expect(getFromEmail()).toBe("magic@harrietscleaning.ca");
   });
 });
 
@@ -137,8 +137,8 @@ describe("send helpers with mocked Resend", () => {
 
   beforeEach(() => {
     process.env.RESEND_API_KEY = "re_test_key";
-    process.env.ADMIN_NOTIFICATION_EMAIL = "admin@harryspottercleaning.ca";
-    process.env.FROM_EMAIL = "Harry Spotter <magic@harryspottercleaning.ca>";
+    process.env.ADMIN_NOTIFICATION_EMAIL = "admin@harrietscleaning.ca";
+    process.env.FROM_EMAIL = "Harriet's Spotless <magic@harrietscleaning.ca>";
     delete process.env.EMAIL_FROM_ADDRESS;
     delete process.env.EMAIL_FROM_NAME;
     sendSpy = vi.fn().mockResolvedValue({ id: "email-id" });
@@ -161,8 +161,8 @@ describe("send helpers with mocked Resend", () => {
     expect(result.sent).toBe(true);
     expect(sendSpy).toHaveBeenCalledTimes(1);
     const call = sendSpy.mock.calls[0][0];
-    expect(call.to).toBe("admin@harryspottercleaning.ca");
-    expect(call.from).toBe("Harry Spotter <magic@harryspottercleaning.ca>");
+    expect(call.to).toBe("admin@harrietscleaning.ca");
+    expect(call.from).toBe("Harriet's Spotless <magic@harrietscleaning.ca>");
     expect(call.subject).toBe("New contractor signup — new@contractor.com");
     expect(call.text).toContain("Email: new@contractor.com");
     expect(call.text).toContain("User ID: auth-uid-1");
