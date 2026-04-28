@@ -22,9 +22,9 @@ export interface RenderedEmail {
   replyTo: string;
 }
 
-const REPLY_TO = "admin@harryspottercleaning.ca";
+const REPLY_TO = "bookings@harrietscleaning.ca";
 const DEFAULT_LOGO =
-  "https://harryspottercleaning.ca/Completed_Trasp_Logo_for_Harry_Spotter.png";
+  "https://www.harrietscleaning.ca/harriets-logo.png";
 
 function formatSlot(slot: string | Date): string {
   const d = slot instanceof Date ? slot : new Date(slot);
@@ -72,11 +72,11 @@ export function renderClientReminder(input: ClientReminderInput): RenderedEmail 
   const html = `
     <div style="font-family:'Segoe UI','Nunito',sans-serif;max-width:600px;margin:0 auto;padding:32px;background:#fdf8f0;">
       <div style="text-align:center;margin-bottom:24px;">
-        <img src="${logo}" alt="Harry Spotter" width="80" style="border-radius:12px;" />
+        <img src="${logo}" alt="Harriet's Spotless" width="80" style="border-radius:12px;" />
       </div>
       <h1 style="color:#6b1629;font-size:22px;text-align:center;margin:0 0 8px;">${escapeHtml(greeting)}! ✨</h1>
       <p style="color:#555;font-size:15px;text-align:center;margin:0 0 24px;">
-        Just a quick wand-wave reminder — your Harry Spotter cleaning is tomorrow.
+        Just a quick wand-wave reminder — your Harriet's Spotless cleaning is tomorrow.
       </p>
       <div style="background:#fff;border:1px solid #e5e2db;border-radius:12px;padding:20px;margin-bottom:16px;">
         <p style="color:#333;font-size:14px;margin:0 0 8px;"><strong>Appointment details</strong></p>
@@ -89,14 +89,14 @@ export function renderClientReminder(input: ClientReminderInput): RenderedEmail 
         Need to reach us? Just reply to this email.
       </p>
       <p style="color:#999;font-size:11px;text-align:center;margin-top:24px;">
-        Harry Spotter Cleaning Co. — Ottawa's Magical Cleaners<br/>
-        admin@harryspottercleaning.ca
+        Harriet's Spotless Cleaning Co. — Ottawa's Magical Cleaners<br/>
+        bookings@harrietscleaning.ca
       </p>
     </div>`;
 
   const text = `${greeting},
 
-This is a quick reminder that your Harry Spotter cleaning is tomorrow.
+This is a quick reminder that your Harriet's Spotless cleaning is tomorrow.
 
 When: ${slotLabel}
 Where: ${address}
@@ -104,8 +104,8 @@ Your cleaner: ${contractor}
 ${prepText}
 Need to reach us? Just reply to this email.
 
-— Harry Spotter Cleaning Co.
-admin@harryspottercleaning.ca
+— Harriet's Spotless Cleaning Co.
+bookings@harrietscleaning.ca
 `;
 
   return { subject, html, text, replyTo: REPLY_TO };
