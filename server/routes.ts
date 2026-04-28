@@ -1124,7 +1124,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   });
 
   // POST /api/booking/book — client books a slot for a quote
-  app.post("/api/booking/book", requireAuth, async (req, res) => {
+  app.post("/api/booking/book", async (req, res) => {
     try {
       const { quoteId, start, end, paymentIntentId } = req.body;
       const bodySlots = Array.isArray(req.body?.slots) ? (req.body.slots as SlotInput[]) : null;
