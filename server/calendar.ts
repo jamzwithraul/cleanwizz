@@ -31,7 +31,7 @@ const SLOT_WINDOWS = [
   { start: 13, end: 19 }, // afternoon block (last 2-hr slot starts at 5 PM, ends 7 PM)
 ];
 const SLOT_DURATION_HOURS = 2; // each cleaning slot is 2 hours
-const DAYS_AHEAD = 14; // show availability 2 weeks out
+const DAYS_AHEAD = 60; // booking window — match frontend calendar widget (60 days)
 const WORKING_DAYS = [1, 2, 3, 4, 5, 6]; // Mon=1 … Sat=6 (0=Sun)
 
 // ── Slot status ──────────────────────────────────────────────────────────────
