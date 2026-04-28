@@ -15,17 +15,11 @@ declare module "http" {
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
 // Allows frontends to reach this Railway backend across origins.
-// Both old (harryspottercleaning.ca) and new (harrietscleaning.ca) domains are
-// listed during the brand transition so traffic continues without interruption.
 // ALLOWED_ORIGINS env var can add additional origins if needed.
 const DEFAULT_ORIGINS = [
-  // New brand domains
   "https://harrietscleaning.ca",
   "https://www.harrietscleaning.ca",
   "https://quotes.harrietscleaning.ca",
-  // Old brand domains — kept during transition
-  "https://harryspottercleaning.ca",
-  "https://quotes.harryspottercleaning.ca",
 ];
 const envOrigins = (process.env.ALLOWED_ORIGINS || process.env.ALLOWED_ORIGIN || "")
   .split(",")

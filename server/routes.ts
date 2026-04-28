@@ -555,7 +555,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   // POST /api/internal/send-client-reminder            (reminder_type='initial')
   // POST /api/internal/send-client-reminder-update     (reminder_type='update')
   // Both guarded by X-Internal-Secret, called from the Supabase cron / Edge
-  // Function on harryspottercleaning.ca.
+  // Function on harrietscleaning.ca.
   attachReminderEndpoints(app, () => ({
     supabase: hsSupa,
     resend,
