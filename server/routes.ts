@@ -358,18 +358,32 @@ export function computePricing(input: ComputePricingInput): PricingBreakdown {
   const s = input.settings || {};
 
   const sqftPrice = round2(sqft * sqftRate);
-  const basePrice = Math.max(minimum, sqftPrice);
+  let basePrice = Math.max(minimum, sqftPrice);
+
+  // ── TEMPORARY: live-mode launch test override ────────────────────────────
+  // The LIVETEST_FLOOR promo code forces basePrice down to a token amount so
+  // we can run a small real-money smoke test of the live Stripe pipeline
+  // without paying full price. Remove this branch (and the promo_codes row)
+  // once the live launch test is complete.
+  const codeUpper = (input.discountCode || "").toUpperCase();
+  const isLiveTestFloor = codeUpper === "LIVETEST_FLOOR" && service === "standard";
+  if (isLiveTestFloor) {
+    basePrice = 10;
+  }
+  // ────────────────────────────────────────────────────────────────────────
 
   // Determine applicable discount. Only welcome/promo-code discounts apply to
   // one-off bookings; subscription discounts are handled separately at billing time.
   let discountPct = 0;
   let discountLabel: string | null = null;
-  if (input.welcomeEligible) {
+  if (input.welcomeEligible && !isLiveTestFloor) {
     discountPct = DISCOUNT_RATES.welcome;
     discountLabel = "Welcome (15%)";
   }
 
-  const discountablePortion = Math.max(0, round2(sqftPrice - minimum));
+  const discountablePortion = isLiveTestFloor
+    ? 0
+    : Math.max(0, round2(sqftPrice - minimum));
   const discount = round2(discountablePortion * discountPct);
   const discountedBase = round2(basePrice - discount);
 
@@ -664,12 +678,29 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   // IMPORTANT: /validate must come before /:id to avoid route shadowing
   app.post("/api/promo-codes/validate", async (req, res) => {
     try {
-      const { code } = req.body;
+      const { code, serviceType } = req.body;
       const pc = await getStorage().getPromoCode(code);
       if (!pc || !pc.active) return res.status(404).json({ error: "Invalid or inactive promo code" });
       const now = new Date();
       if (pc.validFrom && new Date(pc.validFrom) > now) return res.status(400).json({ error: "Promo not yet valid" });
       if (pc.validTo   && new Date(pc.validTo)   < now) return res.status(400).json({ error: "Promo has expired" });
+
+      // Service-type applicability check.
+      // Micro Clean is a flat-rate service; percent-off promo codes have no
+      // effect on it (computePricing ignores discounts for Micro). Returning
+      // success here would mislead the user into thinking they saved money.
+      // Special-case the LIVETEST_FLOOR launch-test code for Standard only.
+      if (serviceType === "micro" && pc.code !== "LIVETEST_FLOOR") {
+        return res.status(400).json({
+          error: "Promo codes don’t apply to Micro Clean (flat rate). Choose a Standard, Deep, or Move-In/Out service.",
+        });
+      }
+      if (pc.code === "LIVETEST_FLOOR" && serviceType !== "standard") {
+        return res.status(400).json({
+          error: "This code is only valid on Standard Clean.",
+        });
+      }
+
       res.json(pc);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
