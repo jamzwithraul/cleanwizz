@@ -53,12 +53,16 @@ export function findOpenSlot(
   slot: SlotInput,
   available: SlotInfo[],
 ): { ok: true; slot: SlotInfo } | { ok: false; err: SlotValidationError } {
+  // Match on start only. The available[] feed emits canonical 2-hour windows
+  // (SLOT_DURATION_HOURS in calendar.ts), but actual job duration depends on
+  // service type (Standard=4h, Deep=6h, Move-out=8h, Micro=2h). The frontend
+  // sends `end` reflecting the real job duration, which would never match the
+  // 2-hour grid. Slot start uniquely identifies the booking anchor; the route
+  // handler uses the caller-supplied end when creating the Google Calendar
+  // event so the full job duration is blocked.
   const startIso = new Date(slot.start).toISOString();
-  const endIso = new Date(slot.end).toISOString();
   const match = available.find(
-    (s) =>
-      new Date(s.start).toISOString() === startIso &&
-      new Date(s.end).toISOString() === endIso,
+    (s) => new Date(s.start).toISOString() === startIso,
   );
   if (!match) {
     return {
@@ -113,7 +117,9 @@ export async function validateBookingSlots(
   for (const s of slots) {
     const check = findOpenSlot(s, available);
     if (!check.ok) return check;
-    resolved.push(check.slot);
+    // Preserve caller-supplied end so the route handler can block the actual
+    // job duration (e.g. 4h for Standard) on Google Calendar, not the 2h grid.
+    resolved.push({ ...check.slot, end: new Date(s.end).toISOString() });
   }
   return { ok: true, slots: resolved };
 }

@@ -81,6 +81,38 @@ describe("findOpenSlot", () => {
     const res = findOpenSlot({ start, end }, []);
     expect(res.ok).toBe(false);
   });
+
+  it("matches on start only — accepts a 4h Standard job against a 2h slot grid", () => {
+    // Regression: backend slot grid is 2h windows, but Standard Clean is a
+    // 4h job. Frontend sends start matching the grid + end at start+4h. We
+    // must match by start so the booking goes through and the route handler
+    // can block the full 4h on Google Calendar.
+    const standardEnd = "2026-04-22T18:00:00.000Z"; // 4h after start
+    const res = findOpenSlot(
+      { start, end: standardEnd },
+      [{ start, end, status: "available" }],
+    );
+    expect(res.ok).toBe(true);
+  });
+});
+
+describe("validateBookingSlots — duration preservation", () => {
+  const now = new Date("2026-04-18T00:00:00Z");
+
+  it("preserves caller-supplied end so route handler blocks full job duration", async () => {
+    const start = new Date(now.getTime() + hours(72)).toISOString();
+    const gridEnd = new Date(now.getTime() + hours(74)).toISOString(); // 2h grid
+    const jobEnd = new Date(now.getTime() + hours(76)).toISOString();  // 4h Standard
+    const res = await validateBookingSlots(
+      [{ start, end: jobEnd }],
+      { now, available: [{ start, end: gridEnd, status: "available" }] },
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.slots[0].start).toBe(start);
+      expect(res.slots[0].end).toBe(jobEnd); // not gridEnd
+    }
+  });
 });
 
 describe("validateBookingSlots", () => {
