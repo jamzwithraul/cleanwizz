@@ -956,6 +956,12 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         specialNotes: notesWithEntrance,
         services:     JSON.stringify([form.serviceType]),
         addons:       JSON.stringify(form.addons),
+        // Newly persisted fields. Previously the form sent these but Zod
+        // silently stripped them and they never reached the contractor.
+        city:                   form.city,
+        allergies:              form.allergies,
+        petsInHome:             form.petsInHome,
+        clientSuppliesProducts: form.clientSuppliesProducts,
       });
 
       // Add tax as a line item for display
@@ -1230,18 +1236,41 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         for (let i = 0; i < validSlots.length; i++) {
           const s = validSlots[i];
           const eventLink = calendarResults[i]?.eventLink || "";
+          // Property line: "3 bed / 1 bath townhouse, 1000 sqft"
+          const propertyBits = [
+            q.bedrooms ? `${q.bedrooms} bed` : "",
+            q.bathrooms ? `${q.bathrooms} bath` : "",
+          ].filter(Boolean).join(" / ");
+          const propertyLine = [
+            propertyBits,
+            q.propertyType || "",
+            q.squareFootage ? `${q.squareFootage} sqft` : "",
+          ].filter(Boolean).join(", ");
+          // petsInHome: true | false | null
+          const petsLine =
+            (q as any).petsInHome === true  ? "Pets in home: yes" :
+            (q as any).petsInHome === false ? "Pets in home: no"  : "";
+          const suppliesLine =
+            (q as any).clientSuppliesProducts === true
+              ? "Client supplies cleaning products"
+              : "Contractor brings cleaning products";
           const notes = [
             `Booking ref: ${bookingRef}${validSlots.length > 1 ? ` (session ${i + 1}/${validSlots.length})` : ""}`,
             `Quote: ${q.id}`,
             client.email ? `Client email: ${client.email}` : "",
             client.phone ? `Phone: ${client.phone}` : "",
-            q.squareFootage ? `Sqft: ${q.squareFootage}` : "",
+            propertyLine ? `Property: ${propertyLine}` : "",
+            (q as any).city ? `City: ${(q as any).city}` : "",
+            petsLine,
+            suppliesLine,
+            (q as any).allergies ? `Allergies/sensitivities: ${(q as any).allergies}` : "",
+            q.specialNotes ? `Special notes: ${q.specialNotes}` : "",
             eventLink ? `Calendar: ${eventLink}` : "",
           ].filter(Boolean).join("\n");
           const { data: jobRow, error: jobErr } = await hsSupa.from("jobs").insert({
             client_name:     client.name,
             client_address:  client.address || "",
-            city:            (client as any).city || "",
+            city:            (q as any).city || (client as any).city || "",
             service_type:    serviceTypeForJob,
             scheduled_start: s.start,
             scheduled_end:   s.end,
