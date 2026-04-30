@@ -48,14 +48,26 @@ describe("LIVETEST_FLOOR launch-test promo code", () => {
     expect(result.subtotal).toBe(199);
   });
 
-  it("does not apply to Deep Clean", () => {
+  it("forces basePrice to $10 on Deep Clean", () => {
     const result = computePricing({
       serviceType: "deep",
       squareFootage: 1000,
       discountCode: "LIVETEST_FLOOR",
     });
-    // Deep clean at 1000 sqft uses its own sqftRate, no floor override.
-    expect(result.basePrice).toBeGreaterThan(10);
+    expect(result.basePrice).toBe(10);
+    expect(result.subtotal).toBe(10);
+    expect(result.total).toBeCloseTo(11.3, 2);
+  });
+
+  it("forces basePrice to $10 on Move-out Clean", () => {
+    const result = computePricing({
+      serviceType: "moveout",
+      squareFootage: 1000,
+      discountCode: "LIVETEST_FLOOR",
+    });
+    expect(result.basePrice).toBe(10);
+    expect(result.subtotal).toBe(10);
+    expect(result.total).toBeCloseTo(11.3, 2);
   });
 
   it("Standard at 1000 sqft without the code charges normal price", () => {
