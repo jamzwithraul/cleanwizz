@@ -366,7 +366,12 @@ export function computePricing(input: ComputePricingInput): PricingBreakdown {
   // without paying full price. Remove this branch (and the promo_codes row)
   // once the live launch test is complete.
   const codeUpper = (input.discountCode || "").toUpperCase();
-  const isLiveTestFloor = codeUpper === "LIVETEST_FLOOR" && service === "standard";
+  // LIVETEST_FLOOR applies to any duration-based service (Standard, Deep,
+  // Move-out) so we can smoke-test each pipeline duration on live mode.
+  // Micro is excluded — it's flat-rate $199 and not part of the slot grid.
+  const LIVETEST_SERVICES = new Set(["standard", "deep", "moveout"]);
+  const isLiveTestFloor =
+    codeUpper === "LIVETEST_FLOOR" && LIVETEST_SERVICES.has(service);
   if (isLiveTestFloor) {
     basePrice = 10;
   }
@@ -695,9 +700,14 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           error: "Promo codes don’t apply to Micro Clean (flat rate). Choose a Standard, Deep, or Move-In/Out service.",
         });
       }
-      if (pc.code === "LIVETEST_FLOOR" && serviceType !== "standard") {
+      // LIVETEST_FLOOR is valid on any duration-based service (Standard /
+      // Deep / Move-out). Micro is rejected by the earlier flat-rate check.
+      if (
+        pc.code === "LIVETEST_FLOOR" &&
+        !(["standard", "deep", "moveout"].includes(serviceType as string))
+      ) {
         return res.status(400).json({
-          error: "This code is only valid on Standard Clean.",
+          error: "This code is only valid on Standard, Deep, or Move-out cleans.",
         });
       }
 
