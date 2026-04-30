@@ -452,8 +452,20 @@ export function computePricing(input: ComputePricingInput): PricingBreakdown {
   };
 }
 
-export function getContractorPayout(serviceType: string): number {
-  return CONTRACTOR_PAYOUT[resolveService(serviceType)];
+// LIVETEST_FLOOR token contractor payout — see note on basePrice override above.
+// Mirrors the customer-side $10 basePrice floor: when the launch-test promo is
+// active, the contractor transfer is also reduced to a token amount so the
+// stripe.transfers.create call fits inside the platform's tiny test balance.
+// Remove alongside the other LIVETEST_FLOOR branches at post-launch teardown.
+export const LIVETEST_FLOOR_CONTRACTOR_PAY = 0.5;
+
+export function getContractorPayout(serviceType: string, discountCode?: string | null): number {
+  const codeUpper = (discountCode || "").toUpperCase();
+  const resolved = resolveService(serviceType);
+  if (codeUpper === "LIVETEST_FLOOR" && resolved !== "micro") {
+    return LIVETEST_FLOOR_CONTRACTOR_PAY;
+  }
+  return CONTRACTOR_PAYOUT[resolved];
 }
 
 // ── Email Template ────────────────────────────────────────────────────────────
@@ -1232,7 +1244,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           const sArr = JSON.parse(q.services || "[]");
           if (Array.isArray(sArr) && typeof sArr[0] === "string") serviceTypeForJob = sArr[0];
         } catch {}
-        const flatPayout = getContractorPayout(serviceTypeForJob);
+        const flatPayout = getContractorPayout(serviceTypeForJob, (q as any).promoCode || null);
         for (let i = 0; i < validSlots.length; i++) {
           const s = validSlots[i];
           const eventLink = calendarResults[i]?.eventLink || "";
@@ -2331,11 +2343,15 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
         let serviceType: string | null = null;
         const { data: jobData } = await hsSupa.from("jobs").select("service_type, pay_amount").eq("id", jobId).single();
-        if (jobData?.service_type) {
+        // Prefer the persisted pay_amount when set: it already reflects any
+        // booking-time overrides (e.g. LIVETEST_FLOOR token payout). Only fall
+        // back to recomputing from service_type if the row never had one.
+        if (jobData?.pay_amount != null && Number(jobData.pay_amount) > 0) {
+          payAmount = Number(jobData.pay_amount);
+          serviceType = jobData.service_type ?? null;
+        } else if (jobData?.service_type) {
           serviceType = jobData.service_type;
           payAmount = getContractorPayout(jobData.service_type);
-        } else if (jobData?.pay_amount) {
-          payAmount = Number(jobData.pay_amount);
         }
         if (serviceType && payAmount > 0) {
           await hsSupa.from("jobs").update({ pay_amount: payAmount }).eq("id", jobId);
