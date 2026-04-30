@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computePricing } from "../routes";
+import { computePricing, getContractorPayout } from "../routes";
 
 // Tests for the temporary LIVETEST_FLOOR launch-test promo code.
 // Remove this file when the promo code branch is removed from computePricing.
@@ -78,5 +78,31 @@ describe("LIVETEST_FLOOR launch-test promo code", () => {
     // Standard min $249, sqftRate $0.25 → 1000 * 0.25 = $250 base
     expect(result.basePrice).toBe(250);
     expect(result.total).toBeCloseTo(250 * 1.13, 2);
+  });
+
+  it("floors contractor pay_amount to $0.50 on Standard", () => {
+    expect(getContractorPayout("standard", "LIVETEST_FLOOR")).toBe(0.5);
+  });
+
+  it("floors contractor pay_amount to $0.50 on Deep", () => {
+    expect(getContractorPayout("deep", "LIVETEST_FLOOR")).toBe(0.5);
+  });
+
+  it("floors contractor pay_amount to $0.50 on Move-out", () => {
+    expect(getContractorPayout("moveout", "LIVETEST_FLOOR")).toBe(0.5);
+  });
+
+  it("does NOT floor contractor pay for Micro (LIVETEST_FLOOR excludes Micro)", () => {
+    expect(getContractorPayout("micro", "LIVETEST_FLOOR")).toBe(120);
+  });
+
+  it("does NOT floor contractor pay when no promo code is used", () => {
+    expect(getContractorPayout("standard")).toBe(160);
+    expect(getContractorPayout("deep")).toBe(240);
+    expect(getContractorPayout("moveout")).toBe(320);
+  });
+
+  it("contractor floor is case-insensitive on the promo code", () => {
+    expect(getContractorPayout("standard", "livetest_floor")).toBe(0.5);
   });
 });
