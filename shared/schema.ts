@@ -37,6 +37,12 @@ export const quotes = sqliteTable("quotes", {
   services: text("services").notNull().default("[]"), // JSON array
   addons: text("addons").notNull().default("[]"),      // JSON array
   paymentIntentId: text("payment_intent_id"),           // Stripe PI for capture
+  // Customer-facing context that the contractor needs. Previously these
+  // fields were sent by the form but silently dropped by the Zod schema.
+  allergies: text("allergies").notNull().default(""),
+  petsInHome: integer("pets_in_home", { mode: "boolean" }), // null = unspecified
+  clientSuppliesProducts: integer("client_supplies_products", { mode: "boolean" }).notNull().default(false),
+  city: text("city").notNull().default("")
 });
 
 export const insertQuoteSchema = createInsertSchema(quotes).omit({ createdAt: true, expiresAt: true });
@@ -132,6 +138,15 @@ export const quoteFormSchema = z.object({
   bedrooms: z.number().int().min(0).max(20).default(1),
   bathrooms: z.number().int().min(0).max(20).default(1),
   specialNotes: z.string().default(""),
+  // Service area is currently local-only. Tighten this enum as we expand.
+  city: z.enum(["Ottawa", "Gloucester"]),
+  // Allergies / sensitivities free-text (e.g. "no smelly chemicals").
+  allergies: z.string().default(""),
+  // Pet matching: yes / no / unspecified. Admin uses this to assign a
+  // pet-comfortable contractor (see contractor_applications.pet_comfortable).
+  petsInHome: z.boolean().nullable().default(null),
+  // Affects what the contractor brings on the day of service.
+  clientSuppliesProducts: z.boolean().default(false),
   // services
   serviceType: z.enum(["standard", "deep", "moveout", "micro"]).default("standard"),
   addons: z.array(z.enum(["fridge", "windows", "baseboards", "grout", "oven", "laundry"])).default([]),

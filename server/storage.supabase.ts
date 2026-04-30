@@ -111,6 +111,10 @@ interface QuoteRow {
   services: string;
   addons: string;
   payment_intent_id: string | null;
+  allergies: string | null;
+  pets_in_home: boolean | null;
+  client_supplies_products: boolean | null;
+  city: string | null;
 }
 
 interface QuoteItemRow {
@@ -177,6 +181,10 @@ function mapQuote(r: QuoteRow): Quote {
     services: r.services,
     addons: r.addons,
     paymentIntentId: r.payment_intent_id ?? null,
+    allergies: r.allergies ?? "",
+    petsInHome: r.pets_in_home ?? null,
+    clientSuppliesProducts: r.client_supplies_products ?? false,
+    city: r.city ?? "",
   };
 }
 
@@ -334,6 +342,10 @@ export function createSupabaseStorage(): IStorageAsync {
         special_notes: data.specialNotes ?? "",
         services: data.services ?? "[]",
         addons: data.addons ?? "[]",
+        allergies: data.allergies ?? "",
+        pets_in_home: data.petsInHome ?? null,
+        client_supplies_products: data.clientSuppliesProducts ?? false,
+        city: data.city ?? "",
       };
       const result = await supabase
         .from("quotes")
