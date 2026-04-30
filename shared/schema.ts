@@ -139,7 +139,7 @@ export const quoteFormSchema = z.object({
   bathrooms: z.number().int().min(0).max(20).default(1),
   specialNotes: z.string().default(""),
   // Service area is currently local-only. Tighten this enum as we expand.
-  city: z.enum(["Ottawa", "Gloucester"]),
+  city: z.enum(["Ottawa"]).default("Ottawa"),
   // Allergies / sensitivities free-text (e.g. "no smelly chemicals").
   allergies: z.string().default(""),
   // Pet matching: yes / no / unspecified. Admin uses this to assign a
