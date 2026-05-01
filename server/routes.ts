@@ -5,7 +5,7 @@ import fs from "fs";
 import { getStorage } from "./storage";
 import { Resend } from "resend";
 import { quoteFormSchema, emailSignupRequestSchema } from "@shared/schema";
-import { getAvailableSlots, bookSlot, type SlotInfo } from "./calendar";
+import { getAvailableSlots, bookSlot, listBlocks, createBlock, deleteBlock, type SlotInfo } from "./calendar";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -1097,6 +1097,56 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     } catch (err: any) {
       console.error("[booking] Failed to get slots:", err.message);
       res.status(500).json({ error: "Could not load available slots." });
+    }
+  });
+
+  // ── Availability admin routes ──────────────────────────────────────────────
+  // Admins can create [BLOCK] events on the booking calendar to mark time as
+  // unavailable (vacation, doctor appointment, etc). The existing slot-busy
+  // check in getAvailableSlots() naturally treats them as booked.
+
+  app.get("/api/availability/blocks", requireAuth, async (_req, res) => {
+    try {
+      const blocks = await listBlocks();
+      res.json(blocks);
+    } catch (err: any) {
+      console.error("[availability] list failed:", err.message);
+      res.status(500).json({ error: "Could not load blocks." });
+    }
+  });
+
+  app.post("/api/availability/blocks", requireAuth, async (req, res) => {
+    try {
+      const { reason, allDay, date, startHour, endHour } = req.body || {};
+      if (!reason || typeof reason !== "string") {
+        return res.status(400).json({ error: "reason required" });
+      }
+      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return res.status(400).json({ error: "date (YYYY-MM-DD) required" });
+      }
+      if (!allDay) {
+        if (typeof startHour !== "number" || typeof endHour !== "number") {
+          return res.status(400).json({ error: "startHour/endHour required for timed blocks" });
+        }
+        if (endHour <= startHour) {
+          return res.status(400).json({ error: "endHour must be > startHour" });
+        }
+      }
+      const block = await createBlock({ reason, allDay: !!allDay, date, startHour, endHour });
+      res.status(201).json(block);
+    } catch (err: any) {
+      console.error("[availability] create failed:", err.message);
+      res.status(500).json({ error: err.message || "Could not create block." });
+    }
+  });
+
+  app.delete("/api/availability/blocks/:eventId", requireAuth, async (req, res) => {
+    try {
+      await deleteBlock(String(req.params.eventId));
+      res.status(204).end();
+    } catch (err: any) {
+      console.error("[availability] delete failed:", err.message);
+      res.status(500).json({ error: err.message || "Could not delete block." });
     }
   });
 

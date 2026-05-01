@@ -12,12 +12,14 @@ import {
   Menu,
   X,
   Sparkles,
+  CalendarOff,
 } from "lucide-react";
 import { useState } from "react";
 
 const navItems = [
   { href: "/", label: "New Quote", icon: FileText },
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/availability", label: "Availability", icon: CalendarOff },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

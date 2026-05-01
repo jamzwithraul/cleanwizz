@@ -197,3 +197,129 @@ export async function bookSlot(opts: {
 
   return event.data.htmlLink || "";
 }
+
+// ── Availability blocks ──────────────────────────────────────────────────────
+// Blocks are Google Calendar events whose summary starts with "[BLOCK]".
+// They share the same calendar as real bookings, so the existing busyBlocks
+// overlap check in getAvailableSlots() already makes blocked slots show as
+// "booked" without any modification to the slot generator.
+const BLOCK_PREFIX = "[BLOCK]";
+
+export interface BlockEvent {
+  id: string;
+  summary: string;
+  reason: string;
+  allDay: boolean;
+  start: string; // ISO for timed, YYYY-MM-DD for all-day
+  end: string;   // ISO for timed, YYYY-MM-DD for all-day (exclusive)
+  htmlLink: string;
+}
+
+function toBlockEvent(e: any): BlockEvent {
+  const summary: string = e.summary || "";
+  const reason = summary.startsWith(BLOCK_PREFIX)
+    ? summary.slice(BLOCK_PREFIX.length).trim()
+    : summary;
+  const allDay = !!e.start?.date;
+  return {
+    id: e.id,
+    summary,
+    reason,
+    allDay,
+    start: allDay ? e.start.date : e.start.dateTime,
+    end:   allDay ? e.end.date   : e.end.dateTime,
+    htmlLink: e.htmlLink || "",
+  };
+}
+
+export async function listBlocks(): Promise<BlockEvent[]> {
+  const auth = getAuth();
+  const calendar = google.calendar({ version: "v3", auth });
+
+  const now = new Date();
+  const timeMin = new Date(now);
+  timeMin.setDate(timeMin.getDate() - 1); // include today
+  const timeMax = new Date(now);
+  timeMax.setDate(timeMax.getDate() + DAYS_AHEAD + 30);
+
+  const res = await calendar.events.list({
+    calendarId: CALENDAR_ID,
+    timeMin: timeMin.toISOString(),
+    timeMax: timeMax.toISOString(),
+    singleEvents: true,
+    orderBy: "startTime",
+    q: BLOCK_PREFIX,
+  });
+
+  return (res.data.items || [])
+    .filter(e => (e.summary || "").startsWith(BLOCK_PREFIX))
+    .map(toBlockEvent);
+}
+
+export async function createBlock(opts: {
+  reason: string;
+  allDay: boolean;
+  date: string;          // YYYY-MM-DD (ET)
+  startHour?: number;    // 0-23, required when !allDay
+  endHour?: number;      // 0-23, required when !allDay
+}): Promise<BlockEvent> {
+  const auth = getAuth();
+  const calendar = google.calendar({ version: "v3", auth });
+
+  const summary = `${BLOCK_PREFIX} ${opts.reason}`.trim();
+
+  let requestBody: any;
+  if (opts.allDay) {
+    // All-day event — Google uses exclusive end date
+    const startDate = opts.date;
+    const endDateObj = new Date(`${opts.date}T00:00:00Z`);
+    endDateObj.setUTCDate(endDateObj.getUTCDate() + 1);
+    const endDate = endDateObj.toISOString().slice(0, 10);
+    requestBody = {
+      summary,
+      start: { date: startDate },
+      end:   { date: endDate },
+    };
+  } else {
+    if (opts.startHour == null || opts.endHour == null) {
+      throw new Error("startHour and endHour required for timed block");
+    }
+    if (opts.endHour <= opts.startHour) {
+      throw new Error("endHour must be greater than startHour");
+    }
+    const sh = String(opts.startHour).padStart(2, "0");
+    const eh = String(opts.endHour).padStart(2, "0");
+    requestBody = {
+      summary,
+      start: { dateTime: `${opts.date}T${sh}:00:00`, timeZone: "America/Toronto" },
+      end:   { dateTime: `${opts.date}T${eh}:00:00`, timeZone: "America/Toronto" },
+    };
+  }
+
+  const event = await calendar.events.insert({
+    calendarId: CALENDAR_ID,
+    requestBody,
+  });
+
+  return toBlockEvent(event.data);
+}
+
+export async function deleteBlock(eventId: string): Promise<void> {
+  const auth = getAuth();
+  const calendar = google.calendar({ version: "v3", auth });
+
+  // Safety: verify the event is actually a block before deleting
+  const existing = await calendar.events.get({
+    calendarId: CALENDAR_ID,
+    eventId,
+  });
+  const summary = existing.data.summary || "";
+  if (!summary.startsWith(BLOCK_PREFIX)) {
+    throw new Error("Refusing to delete: event is not an availability block");
+  }
+
+  await calendar.events.delete({
+    calendarId: CALENDAR_ID,
+    eventId,
+  });
+}
