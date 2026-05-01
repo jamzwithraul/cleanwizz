@@ -292,7 +292,6 @@ export interface ComputePricingInput {
   squareFootage: number;
   addons?: string[];
   sessions?: number;
-  discountCode?: string | null;
   welcomeEligible?: boolean; // true if this code is a welcome/15% promo
   settings?: any;            // optional: pricing_settings for addon prices
 }
@@ -358,37 +357,18 @@ export function computePricing(input: ComputePricingInput): PricingBreakdown {
   const s = input.settings || {};
 
   const sqftPrice = round2(sqft * sqftRate);
-  let basePrice = Math.max(minimum, sqftPrice);
-
-  // ── TEMPORARY: live-mode launch test override ────────────────────────────
-  // The LIVETEST_FLOOR promo code forces basePrice down to a token amount so
-  // we can run a small real-money smoke test of the live Stripe pipeline
-  // without paying full price. Remove this branch (and the promo_codes row)
-  // once the live launch test is complete.
-  const codeUpper = (input.discountCode || "").toUpperCase();
-  // LIVETEST_FLOOR applies to any duration-based service (Standard, Deep,
-  // Move-out) so we can smoke-test each pipeline duration on live mode.
-  // Micro is excluded — it's flat-rate $199 and not part of the slot grid.
-  const LIVETEST_SERVICES = new Set(["standard", "deep", "moveout"]);
-  const isLiveTestFloor =
-    codeUpper === "LIVETEST_FLOOR" && LIVETEST_SERVICES.has(service);
-  if (isLiveTestFloor) {
-    basePrice = 10;
-  }
-  // ────────────────────────────────────────────────────────────────────────
+  const basePrice = Math.max(minimum, sqftPrice);
 
   // Determine applicable discount. Only welcome/promo-code discounts apply to
   // one-off bookings; subscription discounts are handled separately at billing time.
   let discountPct = 0;
   let discountLabel: string | null = null;
-  if (input.welcomeEligible && !isLiveTestFloor) {
+  if (input.welcomeEligible) {
     discountPct = DISCOUNT_RATES.welcome;
     discountLabel = "Welcome (15%)";
   }
 
-  const discountablePortion = isLiveTestFloor
-    ? 0
-    : Math.max(0, round2(sqftPrice - minimum));
+  const discountablePortion = Math.max(0, round2(sqftPrice - minimum));
   const discount = round2(discountablePortion * discountPct);
   const discountedBase = round2(basePrice - discount);
 
@@ -452,19 +432,8 @@ export function computePricing(input: ComputePricingInput): PricingBreakdown {
   };
 }
 
-// LIVETEST_FLOOR token contractor payout — see note on basePrice override above.
-// Mirrors the customer-side $10 basePrice floor: when the launch-test promo is
-// active, the contractor transfer is also reduced to a token amount so the
-// stripe.transfers.create call fits inside the platform's tiny test balance.
-// Remove alongside the other LIVETEST_FLOOR branches at post-launch teardown.
-export const LIVETEST_FLOOR_CONTRACTOR_PAY = 0.5;
-
-export function getContractorPayout(serviceType: string, discountCode?: string | null): number {
-  const codeUpper = (discountCode || "").toUpperCase();
+export function getContractorPayout(serviceType: string): number {
   const resolved = resolveService(serviceType);
-  if (codeUpper === "LIVETEST_FLOOR" && resolved !== "micro") {
-    return LIVETEST_FLOOR_CONTRACTOR_PAY;
-  }
   return CONTRACTOR_PAYOUT[resolved];
 }
 
@@ -693,7 +662,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   });
 
   // IMPORTANT: /validate must come before /:id to avoid route shadowing
-  app.post("/api/promo-codes/validate", async (req, res) => {
+  app.post("/api/promo-codes/validate", ipRateLimit({ max: 50, windowMs: 60_000 }), async (req, res) => {
     try {
       const { code, serviceType } = req.body;
       const pc = await getStorage().getPromoCode(code);
@@ -706,20 +675,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       // Micro Clean is a flat-rate service; percent-off promo codes have no
       // effect on it (computePricing ignores discounts for Micro). Returning
       // success here would mislead the user into thinking they saved money.
-      // Special-case the LIVETEST_FLOOR launch-test code for Standard only.
-      if (serviceType === "micro" && pc.code !== "LIVETEST_FLOOR") {
+      if (serviceType === "micro") {
         return res.status(400).json({
           error: "Promo codes don’t apply to Micro Clean (flat rate). Choose a Standard, Deep, or Move-In/Out service.",
-        });
-      }
-      // LIVETEST_FLOOR is valid on any duration-based service (Standard /
-      // Deep / Move-out). Micro is rejected by the earlier flat-rate check.
-      if (
-        pc.code === "LIVETEST_FLOOR" &&
-        !(["standard", "deep", "moveout"].includes(serviceType as string))
-      ) {
-        return res.status(400).json({
-          error: "This code is only valid on Standard, Deep, or Move-out cleans.",
         });
       }
 
@@ -926,7 +884,6 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         squareFootage: form.squareFootage,
         addons: form.addons || [],
         sessions,
-        discountCode: usedPromo,
         welcomeEligible,
         settings: s,
       });
@@ -1244,7 +1201,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           const sArr = JSON.parse(q.services || "[]");
           if (Array.isArray(sArr) && typeof sArr[0] === "string") serviceTypeForJob = sArr[0];
         } catch {}
-        const flatPayout = getContractorPayout(serviceTypeForJob, (q as any).promoCode || null);
+        const flatPayout = getContractorPayout(serviceTypeForJob);
         for (let i = 0; i < validSlots.length; i++) {
           const s = validSlots[i];
           const eventLink = calendarResults[i]?.eventLink || "";
@@ -2344,8 +2301,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         let serviceType: string | null = null;
         const { data: jobData } = await hsSupa.from("jobs").select("service_type, pay_amount").eq("id", jobId).single();
         // Prefer the persisted pay_amount when set: it already reflects any
-        // booking-time overrides (e.g. LIVETEST_FLOOR token payout). Only fall
-        // back to recomputing from service_type if the row never had one.
+        // booking-time overrides. Only fall back to recomputing from
+        // service_type if the row never had one.
         if (jobData?.pay_amount != null && Number(jobData.pay_amount) > 0) {
           payAmount = Number(jobData.pay_amount);
           serviceType = jobData.service_type ?? null;
