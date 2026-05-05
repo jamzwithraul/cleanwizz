@@ -1185,13 +1185,32 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         return res.status(403).json({ error: "Forbidden." });
       }
 
-      const { destination, amountCents, note } = req.body || {};
+      const { destination, amountCents, note, sourcePaymentIntent } = req.body || {};
       if (!destination || typeof destination !== "string" || !destination.startsWith("acct_")) {
         return res.status(400).json({ error: "destination must be a Connect account id (acct_*)." });
       }
       const cents = Number(amountCents);
       if (!Number.isFinite(cents) || cents <= 0 || cents > 200) {
         return res.status(400).json({ error: "amountCents must be 1..200." });
+      }
+
+      // If sourcePaymentIntent is supplied, resolve it to a charge id and pass
+      // as source_transaction so the transfer is funded by that charge
+      // directly (no need for available balance). Standard Connect pattern.
+      let sourceTransaction: string | undefined;
+      if (sourcePaymentIntent) {
+        if (typeof sourcePaymentIntent !== "string" || !sourcePaymentIntent.startsWith("pi_")) {
+          return res.status(400).json({ error: "sourcePaymentIntent must be a PaymentIntent id (pi_*)." });
+        }
+        const pi = await stripe.paymentIntents.retrieve(sourcePaymentIntent);
+        if (pi.status !== "succeeded") {
+          return res.status(400).json({ error: `PaymentIntent status is '${pi.status}', expected 'succeeded'.` });
+        }
+        const chargeId = pi.latest_charge;
+        if (!chargeId || typeof chargeId !== "string") {
+          return res.status(400).json({ error: "PaymentIntent has no latest_charge." });
+        }
+        sourceTransaction = chargeId;
       }
 
       const transfer = await stripe.transfers.create({
@@ -1203,7 +1222,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           test_transfer: "true",
           triggered_by: email,
           note: typeof note === "string" ? note.slice(0, 100) : "",
+          ...(sourceTransaction ? { source_transaction: sourceTransaction } : {}),
         },
+        ...(sourceTransaction ? { source_transaction: sourceTransaction } : {}),
       });
 
       console.log(`[admin/test-transfer] $${(cents / 100).toFixed(2)} CAD -> ${destination} (id=${transfer.id})`);
